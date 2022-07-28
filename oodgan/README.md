@@ -1,4 +1,4 @@
-## SeqGAN
+## OODGAN
 通过OODGAN生成意图分类的ood数据。
 
 ## 训练
