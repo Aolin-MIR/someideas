@@ -5,7 +5,7 @@
 python main.py
 
 ## 训练语料
-参见data_pos,data_label
+参见data_pos.txt, data_label.txt
 
 ## 生产
 python gen_data.py
