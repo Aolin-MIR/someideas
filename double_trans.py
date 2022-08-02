@@ -299,23 +299,30 @@ class DoubleTrans(nn.Module):
         #         outputs.append(x)
 
 
-
-        
         t=[]
         s=[]
+        t_outputs=[]
+        s_outputs=[]
         for x in x_list:
             x=x.transpose(1, 2)
-            outputs = []
-            outputs.append(x)
+            t_output = []
+            s_output = []
+            _t,_s=torch.split(x,int(temp/2),dim=-1)
+            t_output.append(_t)  
+            s_output.append(_s) 
             # Down blocks
             for layer in self.d_layers:
                 x, _ = layer(x)
-                outputs.append(x)  
-                    
+                _t,_s=torch.split(x,int(temp/2),dim=-1)
+                t_output.append(_t)  
+                s_output.append(_s) 
+            t_outputs.append(t_output)
+            s_outputs.append(s_output)
+            x_last=x        
             for layer in self.c_layers:
                 x, _ = layer(x)
             # add a skip connection to the last output of the down block
-            x = x + outputs.pop()
+            x = x + x_last
 
             temp=x.shape[-1]    
             _t,_s=torch.split(x,int(temp/2),dim=-1)
@@ -325,26 +332,36 @@ class DoubleTrans(nn.Module):
         
 
 
-        # Up blocks
-        for block in self.u_layers:
-            if self.unet:
-                for layer in block:
-                    x, _ = layer(x)
-                    x = x + outputs.pop() # skip connection
-            else:
-                for layer in block:
-                    x, _ = layer(x)
-                    if isinstance(layer, UpPool):
-                        # Before modeling layer in the block
-                        x = x + outputs.pop()
-                        outputs.append(x)
-                x = x + outputs.pop() # add a skip connection from the input of the modeling part of this up block
+        def uppool(t,s):
+            x = torch.cat((t[-1],s[-1]),axis=-1)
+            for block in self.u_layers:
+                if self.unet:
+                    
+                    for layer in block:
+                        _t=t.pop()
+                        _s=s.pop()
+                        x, _ = layer(x)
+                #         x = x + torch.cat((_t,_s),axis=-1) # skip connection
+                else:
+                    outputs=[]
+                    for layer in block:
+                        x, _ = layer(x)
+                        if isinstance(layer, UpPool):
+                            # Before modeling layer in the block
+                            _t=t.pop()
+                            _s=s.pop()
+                            x = x + torch.cat((_t,_s),axis=-1)
+                            outputs.append(x)
+                    x = x + outputs.pop() # add a skip connection from the input of the modeling part of this up block
 
-        # feature projection
-        x = x.transpose(1, 2) # (batch, length, expand)
-        x = self.norm(x)
-
-        return y1,y2,y3,y4,y5,y6,y7,y8, None # required to return a state
+            # feature projection
+            x = x.transpose(1, 2) # (batch, length, expand)
+            return self.norm(x)
+        y0= uppool(t_outputs[1]+s_outputs[2])
+        y1= uppool(t_outputs[0]+s_outputs[3])
+        y2= uppool(t_outputs[3]+s_outputs[0])
+        y3= uppool(t_outputs[2]+s_outputs[1])
+        return [y0,y1,y2,y3]+t+s # required to return a state
 
 
 def train(epoch):
@@ -401,8 +418,17 @@ def train(epoch):
     epoch_loss = running_loss / it
     writer.add_scalar('%s/accuracy' % phase, 100*accuracy, epoch)
     writer.add_scalar('%s/epoch_loss' % phase, epoch_loss, epoch)
+
+def criterion(outputs,inputs,alpha):
+    y1,y2,y3,y4,t1,t2,t3,t4,s1,s2,s3,s4=outputs
+    x1,x2,x3,x4=inputs
+    fn=torch.nn.MSELoss()
+    loss1=fn(t1,t2)+fn(t3,t4)+fn(s1,s3)+fn(s2,s4) 
+    loss2=fn(x1,y1)+fn(x2,y2)+fn(x3,y3)+fn(x4,y4)
+    return alpha*loss1+(1-alpha)*loss2
+
     
-def criterion(outputs):
+
 
 def train(epoch):
     global global_step
@@ -433,7 +459,7 @@ def train(epoch):
 
         # forward/backward
         outputs = model(inputs)
-        loss = criterion(outputs, targets)
+        loss = criterion(outputs, targets,0.5)
         optimizer.zero_grad()
         loss.backward()
         optimizer.step()
