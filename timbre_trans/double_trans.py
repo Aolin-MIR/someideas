@@ -208,11 +208,12 @@ class DoubleTrans(nn.Module):
         glu=True,
         unet=False,
         dropout=0.0,
+        use_transcription_loss=False,
     ):
         super().__init__()
         self.d_model = H = d_model
         self.unet = unet
-
+        self.use_transcription_loss=use_transcription_loss
         def s4_block(dim):
             layer = S4(
                 d_model=dim, 
@@ -285,7 +286,7 @@ class DoubleTrans(nn.Module):
         self.c_layers = nn.ModuleList(c_layers)
         self.u_layers = nn.ModuleList(u_layers)
         self.norm = nn.LayerNorm(H)
-
+        self.linear = nn.Linear(self.d_model, 89)
         assert H == d_model
 
     def forward(self, x_list, state=None):
@@ -311,6 +312,7 @@ class DoubleTrans(nn.Module):
         s=[]
         t_outputs=[]
         s_outputs=[]
+        transcription_out=[]
         for x in x_list:
             x=x.transpose(1, 2)
             t_output = []
@@ -337,7 +339,8 @@ class DoubleTrans(nn.Module):
             t.append(_t)
             s.append(_s)
             #Todo:transcription decoder
-        
+            if self.use_transcription_loss:
+                transcription_out.append(self.linear(_s))
 
 
         def uppool(t,s):
@@ -369,7 +372,10 @@ class DoubleTrans(nn.Module):
         y1= uppool(t_outputs[0]+s_outputs[3])
         y2= uppool(t_outputs[3]+s_outputs[0])
         y3= uppool(t_outputs[2]+s_outputs[1])
-        return [y0,y1,y2,y3]+t+s # required to return a state
+        if self.use_transcription_loss:
+            return [y0,y1,y2,y3]+t+s+transcription_out
+        else:
+            return [y0,y1,y2,y3]+t+s # required to return a state
 
 
 def train(epoch):
@@ -413,7 +419,7 @@ def train(epoch):
         pred = outputs.data.max(1, keepdim=True)[1]
         correct += pred.eq(targets.data.view_as(pred)).sum()
         total += targets.size(0)
-
+        
         writer.add_scalar('%s/loss' % phase, loss.item(), global_step)
 
         # update the progress bar
@@ -427,13 +433,24 @@ def train(epoch):
     writer.add_scalar('%s/accuracy' % phase, 100*accuracy, epoch)
     writer.add_scalar('%s/epoch_loss' % phase, epoch_loss, epoch)
 
-def criterion(outputs,inputs,alpha):
-    y1,y2,y3,y4,t1,t2,t3,t4,s1,s2,s3,s4=outputs
+def criterion(outputs,inputs,alpha=0.5,score=None,beta=1):
+    if score:
+        y1,y2,y3,y4,t1,t2,t3,t4,s1,s2,s3,s4,_s1,_s2,_s3,_s4=outputs
+        sa,sb=score
+        pos_weight = torch.ones([64])
+        bcefn=nn.BCEWithLogitsLoss(pos_weight=pos_weight)
+        loss_transcription = bcefn(_s1,sa) + bcefn(_s3,sa) +bcefn(_s2,sb)+ bcefn(_s4,sb)
+    else:
+        y1,y2,y3,y4,t1,t2,t3,t4,s1,s2,s3,s4=outputs
+
     x1,x2,x3,x4=inputs
     fn=torch.nn.MSELoss()
     loss1=fn(t1,t2)+fn(t3,t4)+fn(s1,s3)+fn(s2,s4) 
     loss2=fn(x1,y1)+fn(x2,y2)+fn(x3,y3)+fn(x4,y4)
-    return alpha*loss1+(1-alpha)*loss2
+    if score:
+        return alpha*loss1+(1-alpha)*loss2+beta*loss_transcription
+    else:
+        return alpha*loss1+(1-alpha)*loss2
 
     
 
