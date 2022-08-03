@@ -9,6 +9,7 @@ from tqdm.auto import tqdm
 from tensorboardX import SummaryWriter
 from torch.utils.data import DataLoader
 from torch.utils.data.sampler import WeightedRandomSampler
+from torch.autograd import Variable
 class DownPool(nn.Module):
     def __init__(self, d_input, expand, pool):
         super().__init__()
