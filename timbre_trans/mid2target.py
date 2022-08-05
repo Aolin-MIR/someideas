@@ -99,7 +99,7 @@ def mid2target(path,seg_width,hop_width,sample_rate,shift=0):
     #hopsize = 10ms 
 
     target=[]
-    seg=[0]*seg_width
+    seg=[[0]*88]*seg_width
     for i, track in enumerate(mid.tracks):
         # print('Track {}: {}'.format(i, track.name))
         passed_time = 0
@@ -118,19 +118,20 @@ def mid2target(path,seg_width,hop_width,sample_rate,shift=0):
                 while index >num:
                     # seg.append(0)
                     target.append(seg)
-                    seg=[0]*seg_width
+                    seg=[[0]*88]*seg_width
                     num+=1
                 # print(55,real_time)
                 rel_time=int((real_time/hop_size)%(seg_len/hop_size))
-                temp = rel_time//(hop_size)
-                seg[temp]=msg.note-21+1
+                # temp = int(rel_time/(hop_size))
+                # print(126,temp,hop_size,rel_time)
+                seg[rel_time][msg.note-21]=1
                 # token_id = rel_time*88+msg.note+shift-21+1
                 # if token_id>88*seg_width:
                 #     print('有问题：',token_id, real_time,rel_time, msg.note)
                 #     continue
                 # print(rel_time == (rel_time*88+msg.note-21+1-1) //88, (rel_time*88+msg.note-21+1-1)%88==(msg.note-21),rel_time,real_time)
                 # seg.append(token_id)
-    seg.append(0)
+    # seg=[0]*seg_width
     target.append(seg)
     # with open (path[:-3]+'target','w') as f:
     #     f.writelines(str(target))
