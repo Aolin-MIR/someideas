@@ -49,6 +49,7 @@ class DownPool(nn.Module):
 
 
 class UpPool(nn.Module):
+
     def __init__(self, d_input, expand, pool):
         super().__init__()
         self.d_output = d_input // expand
@@ -197,7 +198,7 @@ class ResidualBlock(nn.Module):
         x = z + x
 
         return x, state
-class DoubleTrans(nn.Module):
+class Thoegaze(nn.Module):
     def __init__(self,
         d_model=64, 
         n_layers=8, 
@@ -286,7 +287,7 @@ class DoubleTrans(nn.Module):
         self.c_layers = nn.ModuleList(c_layers)
         self.u_layers = nn.ModuleList(u_layers)
         self.norm = nn.LayerNorm(H)
-        self.linear = nn.Linear(self.d_model, 89)
+        self.linear = nn.Linear(self.d_model, 88)
         assert H == d_model
 
     def forward(self, x_list, state=None):
@@ -437,7 +438,7 @@ def criterion(outputs,inputs,alpha=0.5,score=None,beta=1):
     if score:
         y1,y2,y3,y4,t1,t2,t3,t4,s1,s2,s3,s4,_s1,_s2,_s3,_s4=outputs
         sa,sb=score
-        pos_weight = torch.ones([64])
+        pos_weight = torch.ones([88])
         bcefn=nn.BCEWithLogitsLoss(pos_weight=pos_weight)
         loss_transcription = bcefn(_s1,sa) + bcefn(_s3,sa) +bcefn(_s2,sb)+ bcefn(_s4,sb)
     else:
@@ -445,12 +446,12 @@ def criterion(outputs,inputs,alpha=0.5,score=None,beta=1):
 
     x1,x2,x3,x4=inputs
     fn=torch.nn.MSELoss()
-    loss1=fn(t1,t2)+fn(t3,t4)+fn(s1,s3)+fn(s2,s4) 
-    loss2=fn(x1,y1)+fn(x2,y2)+fn(x3,y3)+fn(x4,y4)
+    loss_s=fn(t1,t2)+fn(t3,t4)+fn(s1,s3)+fn(s2,s4) 
+    loss_t=fn(x1,y1)+fn(x2,y2)+fn(x3,y3)+fn(x4,y4)
     if score:
-        return alpha*loss1+(1-alpha)*loss2+beta*loss_transcription
+        return alpha*loss_s+(1-alpha)*loss_t+beta*loss_transcription
     else:
-        return alpha*loss1+(1-alpha)*loss2
+        return alpha*loss_s+(1-alpha)*loss_t
 
     
 
@@ -618,16 +619,11 @@ if __name__=="__main__":
     # add_bg_noise = AddBackgroundNoiseOnSTFT(bg_dataset)
     # train_feature_transform = Compose([ToMelSpectrogramFromSTFT(n_mels=n_mels), DeleteSTFT(), ToTensor('mel_spectrogram', 'input')])
     train_dataset = SpeechCommandsDataset(args.train_dataset,
-                                    Compose([LoadAudio(),
-                                            data_aug_transform,
-                                            add_bg_noise,
-                                            train_feature_transform]))
+                                  )
 
     # valid_feature_transform = Compose([ToMelSpectrogram(n_mels=n_mels), ToTensor('mel_spectrogram', 'input')])
     valid_dataset = SpeechCommandsDataset(args.valid_dataset,
-                                    Compose([LoadAudio(),
-                                            FixAudioLength(),
-                                            valid_feature_transform]))
+                            )
 
     weights = train_dataset.make_weights_for_balanced_classes()
     sampler = WeightedRandomSampler(weights, len(weights))
@@ -642,7 +638,7 @@ if __name__=="__main__":
     if args.comment:
         full_name = '%s_%s' % (full_name, args.comment)
 
-    model = DoubleTrans()
+    model = Thoegaze()
 
     writer = SummaryWriter(comment=('double_trans' + full_name))
     if use_gpu:
