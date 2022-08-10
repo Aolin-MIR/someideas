@@ -323,7 +323,7 @@ def valid(epoch):
     # correct = 0
     # total = 0
 
-    pbar = tqdm(range(args.valid_nums//valid_dataloader.batch_size),
+    pbar = tqdm(valid_dataloader,
          unit="audios", unit_scale=valid_dataloader.batch_size,total=total_it)
     for batch in pbar:
         if it==total_it:
