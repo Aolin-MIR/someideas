@@ -23,7 +23,7 @@ from sf2utils.sf2parse import Sf2File # pip install sf2utils
 SYNTH_BIN = 'timidity'
 import subprocess
 hop_width = 256
-seg_width = 64
+seg_width = 256
 sample_rate = 12800
 from pathlib import Path
 
@@ -63,12 +63,22 @@ instruments = {
     # # 'harp' : ('Roland_SC-88.sf2', 'Harp'),
     # # 'kalimba' : ('Roland_SC-88.sf2', 'Kalimba'),
     # # 'pan' : ('Roland_SC-88.sf2', 'Pan flute')
-    'piano':('Chateau Grand Lite-v1.0.sf2',''),
-    'electric guitar':('Electric-Guitars-JNv4.4.sf2',''),
+    # 'piano':('Chateau Grand Lite-v1.0.sf2',''),
+    'electric guitar Dry':('Electric-Guitars-JNv4.4.sf2','Clean Guitar GU'),
+    'electric guitar Distort':('Electric-Guitars-JNv4.4.sf2','Distortion SG'),
+    'electric guitar Jazz':('Electric-Guitars-JNv4.4.sf2','Jazz Guitar FR3'),
     'acoustic guitar':('Acoustic Guitars JNv2.4.sf2',''),
     'string':('Nice-Strings-PlusOrchestra-v1.6.sf2','String'),
     'orchestra':('Nice-Strings-PlusOrchestra-v1.6.sf2','Orchestra'),
-    'flute':('Expressive Flute SSO-v1.2.sf2','')
+    'cello':('Nice-Strings-PlusOrchestra-v1.6.sf2','Cello 1'),
+    'violin':('Nice-Strings-PlusOrchestra-v1.6.sf2','Violin 1'),
+    'brass':('Nice-Strings-PlusOrchestra-v1.6.sf2','Brass'),
+    'trumpet':('Nice-Strings-PlusOrchestra-v1.6.sf2','Trumpet 2'),
+    'flute':('Expressive Flute SSO-v1.2.sf2',''),
+    'mandolin':('Chris Mandolin-4U-v3.0.sf2','Full Exp Mandolin'),
+
+
+
 }
 def midi2wav(file, outpath, cfg):
     # print(71,cfg)
@@ -168,7 +178,8 @@ def tokenize(midfile, audio,method='cqt',return_target=True):
     
     if return_target:
         segs_num = audio_split.shape[0]
-        targets = np.array(dump_targets(midfile, segs_num),dtype=object)
+        # targets = np.array(dump_targets(midfile, segs_num),dtype=object)
+        targets = dump_targets(midfile, segs_num)
 
         return targets, audio_split, segs_num
     else:
@@ -181,7 +192,7 @@ def dump_targets(midfile, segs_num):
                       seg_width, hop_width,sample_rate)
     # print(segs_num,type(segs_num))
     for _ in range(segs_num-len(targets)):
-      targets.append([[0]*88]*seg_width)
+      targets.append([[] for _ in range(seg_width)])
     
     assert len(targets) == segs_num
 
@@ -229,12 +240,13 @@ def make_datasets(path, output_file):
 
                     for t0, s0 ,s2 in zip(targets0, list(split_audio0),list(split_audio2)):
 
-                        if np.all(t0==0): #and random.randint(0, 100)!=5:  
+                        # if np.all(t0==0): #and random.randint(0, 100)!=5: 
+                        if t0==[[]]*seg_width: 
                             continue
                         z0.append((t0,s0,s2))
                     for t1, s1 ,s3 in zip(targets0, list(split_audio1),list(split_audio3)):
                         # print(178,s.shape)
-                        if np.all(t1==0): #and random.randint(0, 100)!=5:  
+                        if t1==[[]]*seg_width: #and random.randint(0, 100)!=5:  
                             continue
                         z1.append((t1,s1,s3))
                     random.shuffle(z1)
@@ -242,13 +254,14 @@ def make_datasets(path, output_file):
                     for j in range(min(len(z1),len(z0))):
                         t0, s0, s2 = z0[j]
                         t1, s1 ,s3 = z1[j]
+                        # print(246,t0,t1)
                         writer.write({
                             'x0': (s0.reshape([-1]).tobytes(), 'byte'),
                             'x1': (s1.reshape([-1]).tobytes(), 'byte'),
                             'x2': (s2.reshape([-1]).tobytes(), 'byte'),
                             'x3': (s3.reshape([-1]).tobytes(), 'byte'),
-                            't0':(t0.reshape([-1]).tobytes(), 'byte'),
-                            't1':(t1.reshape([-1]).tobytes(), 'byte'),
+                            't0':(str(t0).encode('utf-8'), 'byte'),
+                            't1':(str(t1).encode('utf-8'), 'byte'),
                         })
                         cout+=1
             except AssertionError as e: 
@@ -310,7 +323,7 @@ def find_files(root):
             yield os.path.join(d, f)
 
 if __name__ == "__main__":
-    path = './maestro-v3.0.0'
+    path = '/common-data/liaolin/maestro-v3.0.0/'
     # RENDER MIDI TO WAV
     cfgs = []
     os.makedirs('data/waves', exist_ok=True)
@@ -340,15 +353,8 @@ if __name__ == "__main__":
 
 
 
-    # ns = midi2noteseq(midifile)
-    # ds=tokenize(ns,audio)
-    # v, s = tokenize(midifile, audio)
-    
-    # path = '/mnt/data/piano/workspace/midi/original'
-    output_file ='mae_timbre_small0805.tfrecord'
-    cout = make_datasets(path, output_file)
-    # from tf_record_split import split_record
-    # split_record(output_file)
-    # from train_dev_split import merge_record
-    # merge_record()
-    print("cout", cout)
+
+    # output_file ='/common-data/liaolin/mae_timbre_small_0810_valid.tfrecord'
+    # cout = make_datasets(path, output_file)
+    # print("cout", cout)
+    # 0805:train：429405 valid:72055
