@@ -270,53 +270,7 @@ def make_datasets(path, output_file):
     writer.close()
 
     return cout
-# class TTDataset(Dataset):
 
-
-#     def __init__(self, folder, transform=None):
-#         # all_classes = classes
-#         class_to_idx = {classes[i]: i for i in range(len(classes))}
-
-#         data = []
-#         # for c in all_classes:
-#         #     d = os.path.join(folder, c)
-#         #     target = class_to_idx[c]
-#         #     for f in os.listdir(d):
-#         #         path = os.path.join(d, f)
-#         #         data.append((path, target))
-
-#         # self.classes = classes
-#         self.data = data
-#         self.transform = transform
-
-#     def __len__(self):
-#         return len(self.data)
-
-#     def __getitem__(self, index):
-#         path, target = self.data[index]
-#         data = {'path': path, 'target': target}
-
-#         if self.transform is not None:
-#             data = self.transform(data)
-
-#         return data
-
-#     def make_weights_for_balanced_classes(self):
-#         """adopted from https://discuss.pytorch.org/t/balanced-sampling-between-classes-with-torchvision-dataloader/2703/3"""
-
-#         nclasses = len(self.classes)
-#         count = np.zeros(nclasses)
-#         for item in self.data:
-#             count[item[1]] += 1
-
-#         N = float(sum(count))
-#         weight_per_class = N / count
-#         weight = np.zeros(len(self))
-#         for idx, item in enumerate(self.data):
-#             weight[idx] = weight_per_class[item[1]]
-#         return weight
-
-# helper: find all possible files in a certain directory (and subdirectories)
 def find_files(root):
     for d, dirs, files in os.walk(root):
         for f in files:
@@ -324,9 +278,8 @@ def find_files(root):
 
 if __name__ == "__main__":
     path = '/common-data/liaolin/maestro-v3.0.0/'
-    # RENDER MIDI TO WAV
-    cfgs = []
-    os.makedirs('data/waves', exist_ok=True)
+    # stage1 RENDER MIDI TO WAV, you need to makdir ./sf2, and move the .sf2 file into it.
+
     for home, dirs, files in os.walk(path):
         for filename in files:
             # 文件名列表，包含完整路径
@@ -353,6 +306,7 @@ if __name__ == "__main__":
 
 
 
+    #stage2 make tfrecord dataset, need to do it for twice, one for training ,one for evaluating, maestrov3 except 2018 is used as traindata,2018 for valid. so you need to edit the hierarchy of folders of maestrov3
 
     # output_file ='/common-data/liaolin/mae_timbre_small_0810_valid.tfrecord'
     # cout = make_datasets(path, output_file)
