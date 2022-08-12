@@ -22,12 +22,20 @@ import random
 from sf2utils.sf2parse import Sf2File # pip install sf2utils
 SYNTH_BIN = 'timidity'
 import subprocess
-hop_width = 256
-seg_width = 256
-sample_rate = 12800
-from pathlib import Path
 
+from pathlib import Path
+import argparse
+
+parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.ArgumentDefaultsHelpFormatter)
 # Create a temporary config file pointing to the correct soundfont
+parser.add_argument("--samplerate", type=int, default=25600, help='')
+parser.add_argument("--nfft", type=int, default=2048, help='')
+parser.add_argument("--delete_wav", type=int, default=0, help='')
+args = parser.parse_args()
+
+sample_rate = args.samplerate
+hop_width = sample_rate/32
+seg_width = 256
 def select_midi_soundfont(name, instrument='default'):
     matches = sorted(Path('./data/soundfont/').glob('**/' + name))
     matches = sorted(Path('./sf2').glob('**/' + name))
@@ -150,16 +158,19 @@ def tokenize(midfile, audio,method='cqt',return_target=True):
     # note_sequences.validate_note_sequence(ns)
     samples = load_audio(audio)
     frames = _audio_to_frames(samples,hop_width)
+
     # print (88,frames.shape)
     assert frames.shape[0] >= sample_rate*10  # 过短10s以下被舍弃
     # print(183, frames.shape)
     # frames = np.reshape(frames, [-1])
     # frames = frames[:256*16]
+    if args.delete_wav:
+        os.remove(audio)
     if method=='cqt':
         frames = librosa.cqt(frames, sr=sample_rate,
                          hop_length=hop_width, fmin=27.50, n_bins=nbins, bins_per_octave=36)
     elif method == 'stft':
-        frames = librosa.stft(y=frames,n_fft=512, hop_length=hop_width)
+        frames = librosa.stft(y=frames,n_fft=args.nfft, hop_length=hop_width)
     elif method == 'melspec':
         frames = librosa.feature.melspectrogram(y=frames, sr=sample_rate, n_fft=256, hop_length=256,n_mels=128)
     frames = np.abs(frames)
