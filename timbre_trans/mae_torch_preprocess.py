@@ -31,6 +31,9 @@ parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.A
 parser.add_argument("--samplerate", type=int, default=25600, help='')
 parser.add_argument("--nfft", type=int, default=2048, help='')
 parser.add_argument("--delete_wav", type=int, default=0, help='')
+parser.add_argument("--traindatasets", type=str, default='./traindatasets', help='')
+parser.add_argument("--validdatasets", type=str, default='./validdatasets', help='')
+parser.add_argument("--maestropath", type=str, default='', help='')
 args = parser.parse_args()
 
 sample_rate = args.samplerate
@@ -212,14 +215,18 @@ def dump_targets(midfile, segs_num):
 
 
 
-def make_datasets(path, output_file):
+def make_datasets(path, output_file,tag='train'):
     
     mid_Filelist = []
     for home, dirs, files in os.walk(path):
         for filename in files:
             # 文件名列表，包含完整路径
-            if 'midi' == filename[-4:] and 'byte' not in filename:
-                mid_Filelist.append(os.path.join(home, filename))
+            if tag=='train':
+                if 'midi' == filename[-4:] and '2018' not in filename:
+                    mid_Filelist.append(os.path.join(home, filename))
+            else:
+                if 'midi' == filename[-4:] and '2018'  in filename:
+                    mid_Filelist.append(os.path.join(home, filename))
             # # 文件名列表，只包含文件名
             # Filelist.append( filename)
 
@@ -288,7 +295,7 @@ def find_files(root):
             yield os.path.join(d, f)
 
 if __name__ == "__main__":
-    path = '/common-data/liaolin/maestro-v3.0.0/'
+    path = args.maestro_path
     # stage1 RENDER MIDI TO WAV, you need to makdir ./sf2, and move the .sf2 file into it.
 
     for home, dirs, files in os.walk(path):
@@ -317,9 +324,14 @@ if __name__ == "__main__":
 
 
 
-    #stage2 make tfrecord dataset, need to do it for twice, one for training ,one for evaluating, maestrov3 except 2018 is used as traindata,2018 for valid. so you need to edit the hierarchy of folders of maestrov3
+    # stage2 make tfrecord dataset, need to do it for twice, one for training ,one for evaluating, maestrov3 except 2018 is used as traindata,2018 for valid. so you need to edit the hierarchy of folders of maestrov3
 
-    # output_file ='/common-data/liaolin/mae_timbre_small_0810_valid.tfrecord'
-    # cout = make_datasets(path, output_file)
-    # print("cout", cout)
+    output_file =args.traindatasets+'.tfrecord'
+    cout = make_datasets(path, output_file,tag='train')
+
+    print("train_cout", cout)
     # 0805:train：429405 valid:72055
+    output_file =args.validdatasets+'.tfrecord'
+    cout = make_datasets(path, output_file,tag='train')
+
+    print("valid_cout", cout)
