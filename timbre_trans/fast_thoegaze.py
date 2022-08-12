@@ -1,3 +1,4 @@
+from this import d
 import warnings
 warnings.filterwarnings("ignore", category=UserWarning)
 
@@ -21,25 +22,28 @@ parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.A
 # parser.add_argument("--valid-dataset", type=str, default='datasets/speech_commands/valid', help='path of validation dataset')
 # parser.add_argument("--background-noise", type=str, default='datasets/speech_commands/train/_background_noise_', help='path of background noise')
 parser.add_argument("--comment", type=str, default='', help='comment in tensorboard title')
-parser.add_argument("--batch-size", type=int, default=128, help='batch size')
+parser.add_argument("--batch_size", type=int, default=32, help='batch size')
 parser.add_argument("--dataload-workers-nums", type=int, default=12, help='number of workers for dataloader')
 parser.add_argument("--weight-decay", type=float, default=1e-2, help='weight decay')
 parser.add_argument("--optim", choices=['sgd', 'adam'], default='sgd', help='choices of optimization algorithms')
-parser.add_argument("--learning-rate", type=float, default=1e-4, help='learning rate for optimization')
+parser.add_argument("--learning-rate", type=float, default=1e-5, help='learning rate for optimization')
 parser.add_argument("--lr-scheduler", choices=['plateau', 'step'], default='plateau', help='method to adjust learning rate')
 parser.add_argument("--lr-scheduler-patience", type=int, default=5, help='lr scheduler plateau: Number of epochs with no improvement after which learning rate will be reduced')
 parser.add_argument("--lr-scheduler-step-size", type=int, default=50, help='lr scheduler step: number of epochs of learning rate decay.')
 parser.add_argument("--lr-scheduler-gamma", type=float, default=0.1, help='learning rate is multiplied by the gamma to decrease it')
-parser.add_argument("--max-epochs", type=int, default=70, help='max number of epochs')
+parser.add_argument("--max-epochs", type=int, default=50, help='max number of epochs')
 parser.add_argument("--resume", type=str, help='checkpoint file to resume')
 parser.add_argument("--segwidth", type=int, default=64, help='')
 parser.add_argument("--dropout", type=float, default=0.1, help='dropout rate')
 parser.add_argument("--alpha", type=float, default=0.5, help='')
-parser.add_argument("--beta", type=float, default=0.6, help='')
+parser.add_argument("--beta", type=float, default=0.8, help='')
 parser.add_argument("--gamma", type=float, default=0.2, help='')
 parser.add_argument("--train_nums", type=int, default=429405, help='')
 parser.add_argument("--valid_nums", type=int, default=72055, help='')
+parser.add_argument("--nfft", type=int, default=512, help='')
+parser.add_argument("--dmodel", type=int, default=512, help='')
 args = parser.parse_args()
+
 
 class CustomTFRecordDataset(TFRecordDataset):
     def __init__(self, data_path,
@@ -80,7 +84,7 @@ class Thoegaze(nn.Module):
         self.d_model = H = d_model
         self.unet = unet
         self.use_transcription_loss=use_transcription_loss
-        self.embedding = nn.Linear(257,self.d_model)
+        self.embedding = nn.Linear(args.nfft/2+1,self.d_model)
         self.pos_emb = PositionalEncoding(
             d_model=d_model,
             dropout=dropout)
@@ -103,7 +107,7 @@ class Thoegaze(nn.Module):
         # self.norm = nn.LayerNorm(H)
         self.linear = nn.Linear(int(self.d_model/2), 88)
         self.m = nn.Sigmoid()
-        self.out =nn.Linear(self.d_model, 257)
+        self.out =nn.Linear(self.d_model, args.nfft/2+1)
         assert H == d_model
    
     def forward(self, x_list, state=None):
@@ -154,6 +158,7 @@ class Thoegaze(nn.Module):
 
 
 def criterion(outputs,inputs,score=None,alpha=0.5,beta=1,gamma=1):
+    
     if score:
         y1,y2,y3,y4,t1,t2,t3,t4,s1,s2,s3,s4,_s1,_s2,_s3,_s4=outputs
         sa,sb=score
@@ -196,10 +201,11 @@ def note_f1(outputs,sa,sb):
         
             for i,seg in enumerate(x):#
                 for j,sheet in enumerate(seg):
+                    # sheet = int(sheet)
                     if not sheet==0:
                         tp+=1
-                        for z in range(max(0,j-5),min(args.segwidth,j+5)):
-                            sc=sheet%12
+                        for z in range(max(0,i-5),min(args.segwidth,i+5)):
+                            sc=j%12
                             while sc<88:
                                 if y[z][sc]==1:
                                     c+=1
@@ -464,7 +470,7 @@ if __name__=="__main__":
     print('use_gpu', use_gpu)
     if use_gpu:
         torch.backends.cudnn.benchmark = True
-
+    print('alpha',args.alpha,'beta',args.beta,'gamma',args.gamma)
     # n_mels = 32
     # if args.input == 'mel40':
     #     n_mels = 40
@@ -494,7 +500,7 @@ if __name__=="__main__":
     if args.comment:
         full_name = '%s_%s' % (full_name, args.comment)
 
-    model = Thoegaze(dropout=args.dropout)
+    model = Thoegaze(dropout=args.dropout,d_model=args.dmodel)
 
     writer = SummaryWriter(comment=('double_trans' + full_name))
     if use_gpu:
