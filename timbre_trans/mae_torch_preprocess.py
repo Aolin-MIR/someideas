@@ -31,6 +31,7 @@ parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.A
 parser.add_argument("--samplerate", type=int, default=25600, help='')
 parser.add_argument("--nfft", type=int, default=2048, help='')
 parser.add_argument("--delete_wav", type=int, default=0, help='')
+parser.add_argument("--segwidth", type=int, default=256, help='')
 parser.add_argument("--traindatasets", type=str, default='./traindatasets', help='')
 parser.add_argument("--validdatasets", type=str, default='./validdatasets', help='')
 parser.add_argument("--maestropath", type=str, default='', help='')
@@ -38,7 +39,7 @@ args = parser.parse_args()
 
 sample_rate = args.samplerate
 hop_width = sample_rate/32
-seg_width = 256
+seg_width = args.segwidth
 def select_midi_soundfont(name, instrument='default'):
     matches = sorted(Path('./data/soundfont/').glob('**/' + name))
     matches = sorted(Path('./sf2').glob('**/' + name))
