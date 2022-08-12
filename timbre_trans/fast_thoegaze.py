@@ -42,6 +42,8 @@ parser.add_argument("--train_nums", type=int, default=429405, help='')
 parser.add_argument("--valid_nums", type=int, default=72055, help='')
 parser.add_argument("--nfft", type=int, default=512, help='')
 parser.add_argument("--dmodel", type=int, default=512, help='')
+parser.add_argument("--traindatasets", type=str, default='./traindatasets', help='')
+parser.add_argument("--validdatasets", type=str, default='./validdatasets', help='')
 args = parser.parse_args()
 
 
@@ -479,8 +481,8 @@ if __name__=="__main__":
     # bg_dataset = BackgroundNoiseDataset(args.background_noise, data_aug_transform)
     # add_bg_noise = AddBackgroundNoiseOnSTFT(bg_dataset)
     # train_feature_transform = Compose([ToMelSpectrogramFromSTFT(n_mels=n_mels), DeleteSTFT(), ToTensor('mel_spectrogram', 'input')])
-    train_path='./mae_timbre_small0805.tfrecord'
-    valid_path='./mae_timbre_small0805_valid.tfrecord'
+    train_path=args.traindatasets+'.tfrecord'
+    valid_path=args.validdatasets+'.tfrecord'
     description = {"x0": "byte", "x1":"byte","x2": "byte", "x3":"byte","t0": "byte", "t1":"byte"}
     train_dataset = CustomTFRecordDataset(train_path, None, description,
                                     shuffle_queue_size=512, transform=parse_fn,length=args.train_nums)
