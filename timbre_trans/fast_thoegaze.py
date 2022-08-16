@@ -104,7 +104,7 @@ class Thoegaze(nn.Module):
         # self.norm = nn.LayerNorm(H)
         self.linear = nn.Linear(int(self.d_model/2), 88)
         self.m = nn.Sigmoid()
-        self.out =nn.Linear(self.d_model, args.nfft/2+1)
+        self.out =nn.Linear(self.d_model, int(args.nfft/2+1))
         assert H == d_model
    
     def forward(self, x_list, state=None):
