@@ -1,7 +1,5 @@
-from this import d
 import warnings
 warnings.filterwarnings("ignore", category=UserWarning)
-
 import torch
 # from transformer import MultiHeadAttentionLayer
 from layers import Encoder,PositionalEncoding
@@ -9,7 +7,7 @@ import argparse
 import time
 import torch.nn as nn
 # from src.models.sequence.ss.standalone.s4 import LinearActivation, S4
-from einops import rearrange
+# from einops import rearrange
 from tqdm.auto import tqdm
 from tensorboardX import SummaryWriter
 from torch.utils.data import DataLoader
@@ -22,8 +20,8 @@ parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.A
 # parser.add_argument("--valid-dataset", type=str, default='datasets/speech_commands/valid', help='path of validation dataset')
 # parser.add_argument("--background-noise", type=str, default='datasets/speech_commands/train/_background_noise_', help='path of background noise')
 parser.add_argument("--comment", type=str, default='', help='comment in tensorboard title')
-parser.add_argument("--batch_size", type=int, default=32, help='batch size')
-parser.add_argument("--dataload-workers-nums", type=int, default=12, help='number of workers for dataloader')
+parser.add_argument("--batch_size", type=int, default=16, help='batch size')
+parser.add_argument("--dataload-workers-nums", type=int, default=4, help='number of workers for dataloader')
 parser.add_argument("--weight-decay", type=float, default=1e-2, help='weight decay')
 parser.add_argument("--optim", choices=['sgd', 'adam'], default='sgd', help='choices of optimization algorithms')
 parser.add_argument("--learning-rate", type=float, default=1e-5, help='learning rate for optimization')
@@ -31,7 +29,7 @@ parser.add_argument("--lr-scheduler", choices=['plateau', 'step'], default='plat
 parser.add_argument("--lr-scheduler-patience", type=int, default=5, help='lr scheduler plateau: Number of epochs with no improvement after which learning rate will be reduced')
 parser.add_argument("--lr-scheduler-step-size", type=int, default=50, help='lr scheduler step: number of epochs of learning rate decay.')
 parser.add_argument("--lr-scheduler-gamma", type=float, default=0.1, help='learning rate is multiplied by the gamma to decrease it')
-parser.add_argument("--max-epochs", type=int, default=50, help='max number of epochs')
+parser.add_argument("--max-epochs", type=int, default=70, help='max number of epochs')
 parser.add_argument("--resume", type=str, help='checkpoint file to resume')
 parser.add_argument("--segwidth", type=int, default=64, help='')
 parser.add_argument("--dropout", type=float, default=0.1, help='dropout rate')
@@ -42,10 +40,7 @@ parser.add_argument("--train_nums", type=int, default=429405, help='')
 parser.add_argument("--valid_nums", type=int, default=72055, help='')
 parser.add_argument("--nfft", type=int, default=512, help='')
 parser.add_argument("--dmodel", type=int, default=512, help='')
-parser.add_argument("--traindatasets", type=str, default='./traindatasets', help='')
-parser.add_argument("--validdatasets", type=str, default='./validdatasets', help='')
 args = parser.parse_args()
-
 
 class CustomTFRecordDataset(TFRecordDataset):
     def __init__(self, data_path,
@@ -152,9 +147,9 @@ class Thoegaze(nn.Module):
         y3=self.out(y3)
 
         if self.use_transcription_loss:
-            return [y0,y1,y2,y3]+t+s+transcription_out
+            return [y0,y1,y2,y3]+transcription_out
         else:
-            return [y0,y1,y2,y3]+t+s # required to return a state
+            return [y0,y1,y2,y3] # required to return a state
 
 
 
@@ -162,7 +157,7 @@ class Thoegaze(nn.Module):
 def criterion(outputs,inputs,score=None,alpha=0.5,beta=1,gamma=1):
     
     if score:
-        y1,y2,y3,y4,t1,t2,t3,t4,s1,s2,s3,s4,_s1,_s2,_s3,_s4=outputs
+        y1,y2,y3,y4,_s1,_s2,_s3,_s4=outputs
         sa,sb=score
         sa = sa.float().cuda()
         sb = sb.float().cuda()
@@ -171,17 +166,17 @@ def criterion(outputs,inputs,score=None,alpha=0.5,beta=1,gamma=1):
         # print(184,_s1.device,sa.device)
         loss_transcription = bcefn(_s1,sa) + bcefn(_s3,sa) +bcefn(_s2,sb)+ bcefn(_s4,sb)
     else:
-        y1,y2,y3,y4,t1,t2,t3,t4,s1,s2,s3,s4=outputs
+        y1,y2,y3,y4=outputs
 
     x1,x2,x3,x4=inputs
     fn=torch.nn.MSELoss()
-    loss_s=fn(s1,s3)+fn(s2,s4) 
-    loss_t=fn(t1,t2)+fn(t3,t4)
+    # loss_s=fn(s1,s3)+fn(s2,s4) 
+    # loss_t=fn(t1,t2)+fn(t3,t4)
     loss_syth=fn(x1,y1)+fn(x2,y2)+fn(x3,y3)+fn(x4,y4)
     if score:
-        return (1-beta-gamma)*(alpha*loss_s+(1-alpha)*loss_t)+beta*loss_syth+gamma*loss_transcription,loss_s,loss_t,loss_transcription,loss_syth
+        return beta*loss_syth+gamma*loss_transcription,loss_transcription,loss_syth
     else:
-        return  (1-beta-gamma)*(alpha*loss_s+(1-alpha)*loss_t)+beta*loss_syth,loss_s,loss_t,loss_syth
+        return  beta*loss_syth,loss_syth
     
 def note_f1(outputs,sa,sb):
 
@@ -280,7 +275,7 @@ def train(epoch):
         # forward/backward
         outputs = model([x0,x1,x2,x3])
         
-        loss,loss_s,loss_t,loss_trans,loss_syth = criterion(outputs, [x0,x1,x2,x3],[t0,t1],alpha=args.alpha,beta=args.beta,gamma=args.gamma)
+        loss,loss_trans,loss_syth = criterion(outputs, [x0,x1,x2,x3],[t0,t1],alpha=args.alpha,beta=args.beta,gamma=args.gamma)
         optimizer.zero_grad()
         loss.backward()
         optimizer.step()
@@ -289,8 +284,7 @@ def train(epoch):
         it += 1
         global_step += 1
         running_loss += loss
-        running_loss_s += loss_s
-        running_loss_t += loss_t
+
         running_loss_trans += loss_trans
         running_loss_syth += loss_syth
         # pred = outputs.data.max(1, keepdim=True)[1]
@@ -306,8 +300,8 @@ def train(epoch):
         # update the progress bar
         pbar.set_postfix({'epoch':str(epoch+1),
             'train_loss': "%.05f" % (running_loss / it),
-            'loss_s': "%.05f" % (running_loss_s / it),
-            'loss_t': "%.05f" % (running_loss_t / it),
+            # 'loss_s': "%.05f" % (running_loss_s / it),
+            # 'loss_t': "%.05f" % (running_loss_t / it),
             'loss_trans': "%.05f" % (running_loss_trans / it),
             'loss_syth': "%.05f" % (running_loss_syth / it),
         })
@@ -317,7 +311,7 @@ def train(epoch):
     print('epoch:',epoch+1,' done')
     # writer.add_scalar('%s/accuracy' % phase, 100*accuracy, epoch)
     # writer.add_scalar('%s/epoch_loss' % phase, epoch_loss, epoch)
-
+@torch.no_grad()
 def valid(epoch):
     global best_f1, best_loss, global_step
     epsilon = 1e-7
@@ -353,14 +347,14 @@ def valid(epoch):
         # forward/backward
         outputs = model([x0,x1,x2,x3])
         
-        loss,loss_s,loss_t,loss_trans,loss_syth  = criterion(outputs, [x0,x1,x2,x3],[t0,t1],alpha=args.alpha,beta=args.beta,gamma=args.gamma)
+        loss,loss_trans,loss_syth  = criterion(outputs, [x0,x1,x2,x3],[t0,t1],alpha=args.alpha,beta=args.beta,gamma=args.gamma)
         metric=note_f1(outputs,t0,t1)
         # statistics
         it += 1
         global_step += 1
         running_loss += loss
-        running_loss_s += loss_s
-        running_loss_t += loss_t
+        # running_loss_s += loss_s
+        # running_loss_t += loss_t
         running_loss_trans += loss_trans
         running_loss_syth += loss_syth
         count+=metric['count']
@@ -382,8 +376,8 @@ def valid(epoch):
         # update the progress bar
         pbar.set_postfix({
             'valid_loss': "%.05f" % (running_loss / it),
-            'loss_s': "%.05f" % (running_loss_s / it),
-            'loss_t': "%.05f" % (running_loss_t / it),
+            # 'loss_s': "%.05f" % (running_loss_s / it),
+            # 'loss_t': "%.05f" % (running_loss_t / it),
             'loss_trans': "%.05f" % (running_loss_trans / it),
             'loss_syth': "%.05f" % (running_loss_syth / it),
             'note_f1':"%.05f" % (nf1)
@@ -481,11 +475,11 @@ if __name__=="__main__":
     # bg_dataset = BackgroundNoiseDataset(args.background_noise, data_aug_transform)
     # add_bg_noise = AddBackgroundNoiseOnSTFT(bg_dataset)
     # train_feature_transform = Compose([ToMelSpectrogramFromSTFT(n_mels=n_mels), DeleteSTFT(), ToTensor('mel_spectrogram', 'input')])
-    train_path=args.traindatasets+'.tfrecord'
-    valid_path=args.validdatasets+'.tfrecord'
+    train_path='./mae_timbre_small0805.tfrecord'
+    valid_path='./mae_timbre_small0805_valid.tfrecord'
     description = {"x0": "byte", "x1":"byte","x2": "byte", "x3":"byte","t0": "byte", "t1":"byte"}
     train_dataset = CustomTFRecordDataset(train_path, None, description,
-                                    shuffle_queue_size=512, transform=parse_fn,length=args.train_nums)
+                                    shuffle_queue_size=256, transform=parse_fn,length=args.train_nums)
     valid_dataset = CustomTFRecordDataset(valid_path, None, description,
                             transform=parse_fn,length=args.valid_nums)
 
@@ -548,10 +542,11 @@ if __name__=="__main__":
     for epoch in range(start_epoch, args.max_epochs):
         if args.lr_scheduler == 'step':
             lr_scheduler.step()
-
+        
         train(epoch)
+        torch.cuda.empty_cache()
         epoch_loss = valid(epoch)
-
+        torch.cuda.empty_cache()
         if args.lr_scheduler == 'plateau':
             lr_scheduler.step(metrics=epoch_loss)
 
