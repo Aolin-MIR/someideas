@@ -1,4 +1,5 @@
 生成数据需要先安装timitity++
+
 midi数据集：maestro v3 https://storage.googleapis.com/magentadata/datasets/maestro/v3.0.0/maestro-v3.0.0-midi.zip
 sf2音色文件：https://sites.google.com/site/soundfonts4u/
 
