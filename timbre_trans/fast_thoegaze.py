@@ -81,7 +81,7 @@ class Thoegaze(nn.Module):
         self.d_model = H = d_model
         self.unet = unet
         self.use_transcription_loss=use_transcription_loss
-        self.embedding = nn.Linear(args.nfft/2+1,self.d_model)
+        self.embedding = nn.Linear(int(args.nfft/2+1),self.d_model)
         self.pos_emb = PositionalEncoding(
             d_model=d_model,
             dropout=dropout)
