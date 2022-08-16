@@ -392,7 +392,12 @@ def valid(epoch):
     total_it=args.valid_nums//valid_dataloader.batch_size
     # correct = 0
     # total = 0
-
+    adj=torch.zeros(88,88)
+    for j in range(88):
+        for i in range(j%12,88,12):
+            adj[j,i]=1
+    if use_gpu:
+        adj.cuda()
     pbar = tqdm(valid_dataloader,
          unit="audios", unit_scale=valid_dataloader.batch_size,total=total_it)
     for batch in pbar:
@@ -418,12 +423,7 @@ def valid(epoch):
         loss,loss_trans,loss_syth  = criterion(outputs, [x0,x1,x2,x3],[t0,t1],alpha=args.alpha,beta=args.beta,gamma=args.gamma)
 
         #加速noteF1的计算
-        adj=torch.zeros(88,88)
-        for j in range(88):
-            for i in range(j%12,88,12):
-                adj[j,i]=1
-        if use_gpu:
-            adj.cuda()
+
         metric=note_f1_v2(outputs,t0,t1,adj)
 
 
@@ -612,6 +612,8 @@ if __name__=="__main__":
         lr_scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, patience=args.lr_scheduler_patience, factor=args.lr_scheduler_gamma)
     else:
         lr_scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=args.lr_scheduler_step_size, gamma=args.lr_scheduler_gamma, last_epoch=start_epoch-1)
+
+
 
 
     print("training %s for thoegazer..." % 'transformer ')
