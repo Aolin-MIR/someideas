@@ -282,8 +282,8 @@ def note_f1_v2(outputs,sa,sb,adj=None):
                 temp=torch.nn.functional.pad(temp,(0,0,0,-i,0,0),'constant',value=0)
                 # print(282,pred.size(),temp.size())
                 pred-=temp
-            else:
-
+            elif i>0:
+                # print(286,pred[:,i:,:].size(),target[:,:-i,:].size())
                 temp=pred[:,i:,:]==target[:,:-i,:]
 
                 temp=temp.type(torch.int)
@@ -291,6 +291,15 @@ def note_f1_v2(outputs,sa,sb,adj=None):
                 temp=torch.nn.functional.pad(temp,(0,0,i,0,0,0),'constant',value=0)
             
                 pred-=temp    
+            else :
+                # print(286,pred[:,i:,:].size(),target[:,:-i,:].size())
+                temp=pred==target
+
+                temp=temp.type(torch.int)
+                c+=torch.count_nonzero(temp)
+                # temp=torch.nn.functional.pad(temp,(0,0,i,0,0,0),'constant',value=0)
+            
+                pred-=temp 
         return tp,tt,c
             
     tp,tt,c=calc(pred,target,adj)
