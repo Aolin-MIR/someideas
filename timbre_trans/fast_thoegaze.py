@@ -614,8 +614,6 @@ if __name__=="__main__":
         lr_scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=args.lr_scheduler_step_size, gamma=args.lr_scheduler_gamma, last_epoch=start_epoch-1)
 
 
-
-
     print("training %s for thoegazer..." % 'transformer ')
     since = time.time()
     for epoch in range(start_epoch, args.max_epochs):
