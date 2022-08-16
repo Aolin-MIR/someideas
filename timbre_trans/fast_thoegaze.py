@@ -291,7 +291,7 @@ def note_f1_v2(outputs,sa,sb,adj=None):
                 pred-=temp    
         return tp,tt,c
             
-    tp,tt,c=calc(pred,target)
+    tp,tt,c=calc(pred,target,adj)
     total_pred+=tp
     total_true+=tt
     count+=c
