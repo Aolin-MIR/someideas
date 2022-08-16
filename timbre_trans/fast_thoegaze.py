@@ -266,6 +266,7 @@ def note_f1_v2(outputs,sa,sb,adj=None):
         pred=torch.round(pred)
         tt=torch.count_nonzero(target)
         tp=torch.count_nonzero(pred)
+        # print(269,pred.device,adj.device,target.device)
         pred=torch.matmul(pred,adj)>=1
         pred=pred.type(torch.int)
         for i in range(-5,5):
@@ -276,9 +277,10 @@ def note_f1_v2(outputs,sa,sb,adj=None):
                 temp=pred[:,:i,:]==target[:,-i:,:]
 
                 temp=temp.type(torch.int)
+                # print(280,temp.size())
                 c+=torch.count_nonzero(temp)
-                temp=torch.nn.functional.pad(temp,(0,0,0,i,0,0))
-            
+                temp=torch.nn.functional.pad(temp,(0,0,0,-i,0,0),'constant',value=0)
+                # print(282,pred.size(),temp.size())
                 pred-=temp
             else:
 
@@ -286,7 +288,7 @@ def note_f1_v2(outputs,sa,sb,adj=None):
 
                 temp=temp.type(torch.int)
                 c+=torch.count_nonzero(temp)
-                temp=torch.nn.functional.pad(temp,(0,0,i,0,0,0))
+                temp=torch.nn.functional.pad(temp,(0,0,i,0,0,0),'constant',value=0)
             
                 pred-=temp    
         return tp,tt,c
@@ -397,7 +399,7 @@ def valid(epoch):
         for i in range(j%12,88,12):
             adj[j,i]=1
     if use_gpu:
-        adj.cuda()
+        adj=adj.cuda()
     pbar = tqdm(valid_dataloader,
          unit="audios", unit_scale=valid_dataloader.batch_size,total=total_it)
     for batch in pbar:
