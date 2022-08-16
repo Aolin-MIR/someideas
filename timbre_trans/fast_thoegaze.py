@@ -177,7 +177,6 @@ def criterion(outputs,inputs,score=None,alpha=0.5,beta=1,gamma=1):
         return beta*loss_syth+gamma*loss_transcription,loss_transcription,loss_syth
     else:
         return  beta*loss_syth,loss_syth
-    
 def note_f1(outputs,sa,sb):
 
     '''Calculate note-F1 score.  
@@ -237,6 +236,75 @@ def note_f1(outputs,sa,sb):
     f1 = 2 * (p*r) / (r + p + epsilon)
     # print({'note_f1': f1, 'precision': p, 'recall': r})
     return {'note_f1':f1,'precision':p,'recall':r,'count':count,'tt':total_true,'tp':total_pred}
+    
+def note_f1_v2(outputs,sa,sb,adj=None):
+
+    '''Calculate note-F1 score.  
+    Returns
+    -------
+    dict    
+    '''
+    # print(24, evalPrediction.predictions.shape)
+    total_pred=0
+    total_true=0
+    count =0
+    if adj==None:
+        adj=torch.zeros(88,88)
+        for j in range(88):
+            for i in range(j%12,88,12):
+                adj[j,i]=1
+
+
+        
+    _s1,_s2,_s3,_s4=outputs[-4:]
+    pred=torch.cat([_s1,_s2,_s3,_s4],axis=0)
+    target=torch.cat([sa,sb,sa,sb],axis=0)
+    def calc(pred,target,adj):
+        # bs,segi,v=pred.size()
+        c=0
+        tp=0
+        pred=torch.round(pred)
+        tt=torch.count_nonzero(target)
+        tp=torch.count_nonzero(pred)
+        pred=torch.matmul(pred,adj)>=1
+        pred=pred.type(torch.int)
+        for i in range(-5,5):
+
+
+            if i<0:
+
+                temp=pred[:,:i,:]==target[:,-i:,:]
+
+                temp=temp.type(torch.int)
+                c+=torch.count_nonzero(temp)
+                temp=torch.nn.functional.pad(temp,(0,0,0,i,0,0))
+            
+                pred-=temp
+            else:
+
+                temp=pred[:,i:,:]==target[:,:-i,:]
+
+                temp=temp.type(torch.int)
+                c+=torch.count_nonzero(temp)
+                temp=torch.nn.functional.pad(temp,(0,0,i,0,0,0))
+            
+                pred-=temp    
+        return tp,tt,c
+            
+    tp,tt,c=calc(pred,target)
+    total_pred+=tp
+    total_true+=tt
+    count+=c
+ 
+
+    # epsilon = 1e-7
+    # # print(57,total_true,total_pred)
+    # r = count/(total_true+epsilon)
+    # p = count/(total_pred+epsilon)
+
+    # f1 = 2 * (p*r) / (r + p + epsilon)
+    # print({'note_f1': f1, 'precision': p, 'recall': r})
+    return {'count':count,'tt':total_true,'tp':total_pred}
 
 def train(epoch):
     global global_step
@@ -259,7 +327,7 @@ def train(epoch):
         # batch=next(iter(train_dataloader))
         # inputs = batch['input']
         # inputs = torch.unsqueeze(inputs, 1)
-        # targets = batch['target']
+        # targets = batch['target']\
         x0,x1,x2,x3,t0,t1=batch['x0'],batch['x1'],batch['x2'],batch['x3'],batch['t0'],batch['t1']
 
         if use_gpu:
@@ -348,7 +416,18 @@ def valid(epoch):
         outputs = model([x0,x1,x2,x3])
         
         loss,loss_trans,loss_syth  = criterion(outputs, [x0,x1,x2,x3],[t0,t1],alpha=args.alpha,beta=args.beta,gamma=args.gamma)
-        metric=note_f1(outputs,t0,t1)
+
+        #加速noteF1的计算
+        adj=torch.zeros(88,88)
+        for j in range(88):
+            for i in range(j%12,88,12):
+                adj[j,i]=1
+        if use_gpu:
+            adj.cuda()
+        metric=note_f1_v2(outputs,t0,t1,adj)
+
+
+
         # statistics
         it += 1
         global_step += 1
