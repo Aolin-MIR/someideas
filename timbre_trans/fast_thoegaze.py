@@ -487,8 +487,8 @@ def valid(epoch):
         'optimizer' : optimizer.state_dict(),
     }
 
-    if metric['note_f1'] > best_f1:
-        best_f1 = metric['note_f1']
+    if  nf1> best_f1:
+        best_f1 = nf1
     #     torch.save(checkpoint, 'checkpoints/best-loss-speech-commands-checkpoint-%s.pth' % full_name)
     #     torch.save(model, '%d-%s-best-loss.pth' % (start_timestamp, full_name))
     if epoch_loss < best_loss:
