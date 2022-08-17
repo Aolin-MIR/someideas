@@ -277,7 +277,7 @@ def note_f1_v2(outputs,sa,sb,adj=None):
         for i in range(-3,3):
 
             for j in range(-1,1):
-                target=_target.clone()
+                # target=_target.clone()
                 if j<0:
                     target=_target[:,:,:j*12]
                     pred=_pred[:,:,-j*12:]
