@@ -399,6 +399,7 @@ def valid(epoch):
     print('start evaluating')
     running_loss,running_loss_t,running_loss_s,running_loss_trans,running_loss_syth = 0.0, 0.0, 0.0, 0.0, 0.0
     count,tt,tp=0,0,0
+    best_f1=0.0
     it = 0
     total_it=args.valid_nums//valid_dataloader.batch_size
     # correct = 0
