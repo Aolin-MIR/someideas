@@ -283,7 +283,7 @@ def note_f1_v2(outputs,sa,sb,adj=None):
                     pred=_pred[:,:,-j*12:]
                     # target=nn.functional.pad(target,(-j*12,0,0,0,0,0),'constant',value=0)
                 elif j>0:
-                    target=target[:,:,j*12:]
+                    target=_target[:,:,j*12:]
                     pred=_pred[:,:,:-j*12]
                 else:
                     target=_target
@@ -295,10 +295,8 @@ def note_f1_v2(outputs,sa,sb,adj=None):
 
                     temp=pred[:,:i,:]==target[:,-i:,:]
                     # print(292,temp[0,0,:])
-                    temp=temp.type(torch.int)
-                    # print(294,torch.count_nonzero(temp))
-                    temp=temp*target[:,-i:,:]
-                    # print(296,torch.count_nonzero(temp),torch.count_nonzero(target[:,-i:,:]))
+                    temp=temp.type(torch.int)*target[:,-i:,:]
+
                     c+=torch.count_nonzero(temp)
                     # temp=nn.functional.pad(temp,(0,0,0,-i,0,0),'constant',value=0)
                     target[:,-i:,:]-=temp
@@ -311,7 +309,7 @@ def note_f1_v2(outputs,sa,sb,adj=None):
                     temp=pred[:,i:,:]==target[:,:-i,:]
 
                     temp=temp.type(torch.int)*target[:,:-i,:]
-                    # c+=torch.count_nonzero(temp)
+
                     c+=torch.count_nonzero(temp)
                     # temp=nn.functional.pad(temp,(0,0,i,0,0,0),'constant',value=0)*target
                     target[:,:-i,:]-=temp
