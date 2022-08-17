@@ -20,7 +20,7 @@ parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.A
 # parser.add_argument("--valid-dataset", type=str, default='datasets/speech_commands/valid', help='path of validation dataset')
 # parser.add_argument("--background-noise", type=str, default='datasets/speech_commands/train/_background_noise_', help='path of background noise')
 parser.add_argument("--comment", type=str, default='', help='comment in tensorboard title')
-parser.add_argument("--batch_size", type=int, default=16, help='batch size')
+parser.add_argument("--batch_size", type=int, default=64, help='batch size')
 parser.add_argument("--dataload-workers-nums", type=int, default=4, help='number of workers for dataloader')
 parser.add_argument("--weight-decay", type=float, default=1e-2, help='weight decay')
 parser.add_argument("--optim", choices=['sgd', 'adam'], default='sgd', help='choices of optimization algorithms')
@@ -38,6 +38,8 @@ parser.add_argument("--beta", type=float, default=0.8, help='')
 parser.add_argument("--gamma", type=float, default=0.2, help='')
 parser.add_argument("--train_nums", type=int, default=429405, help='')
 parser.add_argument("--valid_nums", type=int, default=72055, help='')
+# parser.add_argument("--train_nums", type=int, default=64, help='')
+# parser.add_argument("--valid_nums", type=int, default=64, help='')
 parser.add_argument("--nfft", type=int, default=512, help='')
 parser.add_argument("--dmodel", type=int, default=512, help='')
 args = parser.parse_args()
@@ -159,9 +161,10 @@ def criterion(outputs,inputs,score=None,alpha=0.5,beta=1,gamma=1):
     if score:
         y1,y2,y3,y4,_s1,_s2,_s3,_s4=outputs
         sa,sb=score
-        sa = sa.float().cuda()
-        sb = sb.float().cuda()
-        pos_weight = torch.ones([88]).cuda()
+        if use_gpu:
+            sa = sa.float().cuda()
+            sb = sb.float().cuda()
+            pos_weight = torch.ones([88]).cuda()
         bcefn=nn.BCELoss(weight=pos_weight)
         # print(184,_s1.device,sa.device)
         loss_transcription = bcefn(_s1,sa) + bcefn(_s3,sa) +bcefn(_s2,sb)+ bcefn(_s4,sb)
@@ -248,61 +251,84 @@ def note_f1_v2(outputs,sa,sb,adj=None):
     total_pred=0
     total_true=0
     count =0
-    if adj==None:
-        adj=torch.zeros(88,88)
-        for j in range(88):
-            for i in range(j%12,88,12):
-                adj[j,i]=1
+    # if adj==None:
+    #     adj=torch.zeros(88,88,dtype=torch.float32)
+    #     for j in range(88):
+    #         for i in range(j%12,88,12):
+    #             adj[j,i]=1
 
 
         
     _s1,_s2,_s3,_s4=outputs[-4:]
     pred=torch.cat([_s1,_s2,_s3,_s4],axis=0)
     target=torch.cat([sa,sb,sa,sb],axis=0)
-    def calc(pred,target,adj):
+    # target=target.type(torch.int32)
+    def calc(_pred,_target):
         # bs,segi,v=pred.size()
         c=0
-        tp=0
-        pred=torch.round(pred)
-        tt=torch.count_nonzero(target)
-        tp=torch.count_nonzero(pred)
-        # print(269,pred.device,adj.device,target.device)
-        pred=torch.matmul(pred,adj)>=1
-        pred=pred.type(torch.int)
-        for i in range(-5,5):
+        
+        _pred=torch.round(_pred)
+        tt=torch.count_nonzero(_target)
+        tp=torch.count_nonzero(_pred)
+        # print(269,pred.dtype,adj.dtype,_target.dtype)
+        # _target=torch.matmul(target,adj)>0
+        
+        # target=target.type(torch.int)
+        for i in range(-3,3):
 
+            for j in range(-1,1):
+                target=_target.clone()
+                if j<0:
+                    target=_target[:,:,:j*12]
+                    pred=_pred[:,:,-j*12:]
+                    # target=nn.functional.pad(target,(-j*12,0,0,0,0,0),'constant',value=0)
+                elif j>0:
+                    target=target[:,:,j*12:]
+                    pred=_pred[:,:,:-j*12]
+                else:
+                    target=_target
+                    pred=_pred
+                    # target=nn.functional.pad(target,(0,j*12,0,0,0,0),'constant',value=0)
+                # print(287,j,target[0,0,:])
 
-            if i<0:
+                if i<0:
 
-                temp=pred[:,:i,:]==target[:,-i:,:]
+                    temp=pred[:,:i,:]==target[:,-i:,:]
+                    # print(292,temp[0,0,:])
+                    temp=temp.type(torch.int)
+                    # print(294,torch.count_nonzero(temp))
+                    temp=temp*target[:,-i:,:]
+                    # print(296,torch.count_nonzero(temp),torch.count_nonzero(target[:,-i:,:]))
+                    c+=torch.count_nonzero(temp)
+                    # temp=nn.functional.pad(temp,(0,0,0,-i,0,0),'constant',value=0)
+                    target[:,-i:,:]-=temp
+                    
+                    # print(282,pred.size(),temp.size())
 
-                temp=temp.type(torch.int)
-                # print(280,temp.size())
-                c+=torch.count_nonzero(temp)
-                temp=torch.nn.functional.pad(temp,(0,0,0,-i,0,0),'constant',value=0)
-                # print(282,pred.size(),temp.size())
-                pred-=temp
-            elif i>0:
-                # print(286,pred[:,i:,:].size(),target[:,:-i,:].size())
-                temp=pred[:,i:,:]==target[:,:-i,:]
+                    
+                elif i>0:
+                    # print(286,pred[:,i:,:].size(),target[:,:-i,:].size())
+                    temp=pred[:,i:,:]==target[:,:-i,:]
 
-                temp=temp.type(torch.int)
-                c+=torch.count_nonzero(temp)
-                temp=torch.nn.functional.pad(temp,(0,0,i,0,0,0),'constant',value=0)
-            
-                pred-=temp    
-            else :
-                # print(286,pred[:,i:,:].size(),target[:,:-i,:].size())
-                temp=pred==target
+                    temp=temp.type(torch.int)*target[:,:-i,:]
+                    # c+=torch.count_nonzero(temp)
+                    c+=torch.count_nonzero(temp)
+                    # temp=nn.functional.pad(temp,(0,0,i,0,0,0),'constant',value=0)*target
+                    target[:,:-i,:]-=temp
+    
+                else :
+                    # print(286,pred[:,i:,:].size(),target[:,:-i,:].size())
+                    temp=pred==target
 
-                temp=temp.type(torch.int)
-                c+=torch.count_nonzero(temp)
-                # temp=torch.nn.functional.pad(temp,(0,0,i,0,0,0),'constant',value=0)
-            
-                pred-=temp 
+                    temp=temp.type(torch.int)*target
+                    c+=torch.count_nonzero(temp)
+                    # temp=torch.nn.functional.pad(temp,(0,0,i,0,0,0),'constant',value=0)
+                
+                    target-=temp 
+                # print(321,c,torch.count_nonzero(pred))
         return tp,tt,c
             
-    tp,tt,c=calc(pred,target,adj)
+    tp,tt,c=calc(pred,target)
     total_pred+=tp
     total_true+=tt
     count+=c
@@ -315,6 +341,7 @@ def note_f1_v2(outputs,sa,sb,adj=None):
 
     # f1 = 2 * (p*r) / (r + p + epsilon)
     # print({'note_f1': f1, 'precision': p, 'recall': r})
+    # print(328,tp,tt,c)
     return {'count':count,'tt':total_true,'tp':total_pred}
 
 def train(epoch):
@@ -404,12 +431,12 @@ def valid(epoch):
     total_it=args.valid_nums//valid_dataloader.batch_size
     # correct = 0
     # total = 0
-    adj=torch.zeros(88,88)
-    for j in range(88):
-        for i in range(j%12,88,12):
-            adj[j,i]=1
-    if use_gpu:
-        adj=adj.cuda()
+    # adj=torch.zeros(88,88,dtype=torch.float32)
+    # for j in range(88):
+    #     for i in range(j%12,88,12):
+    #         adj[j,i]=1
+    # if use_gpu:
+    #     adj=adj.cuda()
     pbar = tqdm(valid_dataloader,
          unit="audios", unit_scale=valid_dataloader.batch_size,total=total_it)
     for batch in pbar:
@@ -436,7 +463,7 @@ def valid(epoch):
 
         #加速noteF1的计算
 
-        metric=note_f1_v2(outputs,t0,t1,adj)
+        metric=note_f1_v2(outputs,t0,t1)
 
 
 
@@ -453,7 +480,7 @@ def valid(epoch):
         tp+=metric['tp']
         r = count/(tt+epsilon)
         p = count/(tp+epsilon)
-
+        # print(463,r,p)
         nf1 = 2 * (p*r) / (r + p + epsilon)
         # writer.add_scalar('%s/loss' %  loss, 
         # '%s/loss_t' %  loss_t, 
@@ -475,7 +502,7 @@ def valid(epoch):
         })
 
     # accuracy = correct/total
-    epoch_loss = running_loss / it
+    epoch_loss = (running_loss / it).tolist()
     # writer.add_scalar('%s/accuracy' % phase, 100*accuracy, epoch)
     # writer.add_scalar('%s/epoch_loss' % phase, epoch_loss, epoch)
 
@@ -492,13 +519,15 @@ def valid(epoch):
         best_f1 = nf1
     #     torch.save(checkpoint, 'checkpoints/best-loss-speech-commands-checkpoint-%s.pth' % full_name)
     #     torch.save(model, '%d-%s-best-loss.pth' % (start_timestamp, full_name))
+    # print(498,epoch_loss,type(epoch_loss),best_loss,type(best_loss))
     if epoch_loss < best_loss:
+        
         best_loss = epoch_loss
-        torch.save(checkpoint, '/common-data/liaolin/timbre_trans/checkpoints/best-loss-tt-checkpoint-%s.pth' % full_name)
-        torch.save(model, '/common-data/liaolin/timbre_trans/checkpoints/%d-%s-best-los-tt.pth' % (start_timestamp, full_name))
-
-    torch.save(checkpoint, '/common-data/liaolin/timbre_trans/checkpoints/last-tt.pth')
-    del checkpoint  # reduce memory
+        torch.save(checkpoint, './checkpoints/best-loss-tt-checkpoint-%s.pth' % full_name)
+        torch.save(model, './checkpoints/%d-%s-best-los-tt.pth' % (start_timestamp, full_name))
+    else:
+        torch.save(checkpoint, './checkpoints/last-tt.pth')
+        del checkpoint  # reduce memory
 
     return epoch_loss
 def get_lr():
@@ -520,7 +549,7 @@ def parse_fn(features):
     #     assert 1==2
     _features=eval(features['t0'])
     # print(707,_features)
-    _temp=np.zeros((args.segwidth,88),int)
+    _temp=np.zeros((args.segwidth,88),np.float32)
     for i,x in enumerate(_features):
 
         for y in x:
@@ -528,7 +557,7 @@ def parse_fn(features):
     features['t0']=_temp        
     _features=eval(features['t1'])
     # print(707,type(_features))
-    _temp=np.zeros((args.segwidth,88),int)
+    _temp=np.zeros((args.segwidth,88),np.float32)
     for i,x in enumerate(_features):
 
         for y in x:
@@ -635,9 +664,11 @@ if __name__=="__main__":
             lr_scheduler.step()
         
         train(epoch)
-        torch.cuda.empty_cache()
+        if use_gpu:
+            torch.cuda.empty_cache()
         epoch_loss = valid(epoch)
-        torch.cuda.empty_cache()
+        if use_gpu:
+            torch.cuda.empty_cache()
         if args.lr_scheduler == 'plateau':
             lr_scheduler.step(metrics=epoch_loss)
 
