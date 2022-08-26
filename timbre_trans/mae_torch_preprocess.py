@@ -30,15 +30,15 @@ parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.A
 # Create a temporary config file pointing to the correct soundfont
 parser.add_argument("--samplerate", type=int, default=25600, help='')
 parser.add_argument("--nfft", type=int, default=2048, help='')
-parser.add_argument("--delete_wav", type=int, default=0, help='')
+parser.add_argument("--delete_wav", type=int, default=1, help='')
 parser.add_argument("--segwidth", type=int, default=256, help='')
-parser.add_argument("--traindatasets", type=str, default='./traindatasets', help='')
-parser.add_argument("--validdatasets", type=str, default='./validdatasets', help='')
-parser.add_argument("--maestropath", type=str, default='', help='')
+parser.add_argument("--traindatasets", type=str, default='/common-data/liaolin/traindatasets', help='')
+parser.add_argument("--validdatasets", type=str, default='/common-data/liaolin/validdatasets', help='')
+parser.add_argument("--maestropath", type=str, default='/common-data/liaolin/maestro-v3.0.0/', help='')
 args = parser.parse_args()
 
 sample_rate = args.samplerate
-hop_width = sample_rate/32
+hop_width = int(sample_rate/32)
 seg_width = args.segwidth
 def select_midi_soundfont(name, instrument='default'):
     matches = sorted(Path('./data/soundfont/').glob('**/' + name))
@@ -168,8 +168,7 @@ def tokenize(midfile, audio,method='cqt',return_target=True):
     # print(183, frames.shape)
     # frames = np.reshape(frames, [-1])
     # frames = frames[:256*16]
-    if args.delete_wav:
-        os.remove(audio)
+
     if method=='cqt':
         frames = librosa.cqt(frames, sr=sample_rate,
                          hop_length=hop_width, fmin=27.50, n_bins=nbins, bins_per_octave=36)
@@ -190,7 +189,9 @@ def tokenize(midfile, audio,method='cqt',return_target=True):
     #   times, values = (note_sequence_to_onsets_and_offsets_and_programs(ns))
 
     audio_split = np.reshape(frames, [-1, seg_width, nbins])
-    
+    if args.delete_wav:
+        print('delete',audio)
+        os.remove(audio)
     if return_target:
         segs_num = audio_split.shape[0]
         # targets = np.array(dump_targets(midfile, segs_num),dtype=object)
@@ -216,7 +217,7 @@ def dump_targets(midfile, segs_num):
 
 
 
-def make_datasets(path, output_file,tag='train'):
+def make_datasets(path, output_file,tag='train',nums=None,render=True):
     
     mid_Filelist = []
     for home, dirs, files in os.walk(path):
@@ -242,47 +243,55 @@ def make_datasets(path, output_file,tag='train'):
         random.shuffle(inst_list)
         file1=mid_Filelist[j*2]
         file2=mid_Filelist[j*2+1]
+        
+        if render:
+            for instrument in instruments:
+                renderMidi( file1, select_midi_soundfont(*instruments[instrument]),instrument)
+                renderMidi( file2, select_midi_soundfont(*instruments[instrument]),instrument)
         for i in range(inst_num//2):
-
+            
 
             try:
-                # random.shuffle(instruments)
-                    # print(i,file1,instruments)
-                    targets0, split_audio0, _ = tokenize(file1, file1[:-4]+inst_list[i*2]+'.wav',method='stft')
-                    targets1, split_audio1, _ = tokenize(file1, file1[:-4]+inst_list[i*2+1]+'.wav',method='stft')
-                    split_audio2 = tokenize(file1, file1[:-4]+inst_list[i*2+1]+'.wav',method='stft',return_target=False)
-                    split_audio3 = tokenize(file1, file2[:-4]+inst_list[i*2+1]+'.wav',method='stft',return_target=False)
+ 
+  
+                targets0, split_audio0, _ = tokenize(file1, file1[:-4]+inst_list[i*2]+'.wav',method='stft')
+                targets1, split_audio1, _ = tokenize(file2, file2[:-4]+inst_list[i*2]+'.wav',method='stft')
+                split_audio2 = tokenize(file1, file1[:-4]+inst_list[i*2+1]+'.wav',method='stft',return_target=False)
+                split_audio3 = tokenize(file2, file2[:-4]+inst_list[i*2+1]+'.wav',method='stft',return_target=False)
 
 
-                    z0=[]#list(zip(targets0, list(split_audio0),list(split_audio2)))
-                    z1=[]#list(zip(targets1, list(split_audio1),list(split_audio3)))
+                z0=[]#list(zip(targets0, list(split_audio0),list(split_audio2)))
+                z1=[]#list(zip(targets1, list(split_audio1),list(split_audio3)))
 
-                    for t0, s0 ,s2 in zip(targets0, list(split_audio0),list(split_audio2)):
+                for t0, s0 ,s2 in zip(targets0, list(split_audio0),list(split_audio2)):
 
-                        # if np.all(t0==0): #and random.randint(0, 100)!=5: 
-                        if t0==[[]]*seg_width: 
-                            continue
-                        z0.append((t0,s0,s2))
-                    for t1, s1 ,s3 in zip(targets0, list(split_audio1),list(split_audio3)):
-                        # print(178,s.shape)
-                        if t1==[[]]*seg_width: #and random.randint(0, 100)!=5:  
-                            continue
-                        z1.append((t1,s1,s3))
-                    random.shuffle(z1)
-                    random.shuffle(z0)                
-                    for j in range(min(len(z1),len(z0))):
-                        t0, s0, s2 = z0[j]
-                        t1, s1 ,s3 = z1[j]
-                        # print(246,t0,t1)
-                        writer.write({
-                            'x0': (s0.reshape([-1]).tobytes(), 'byte'),
-                            'x1': (s1.reshape([-1]).tobytes(), 'byte'),
-                            'x2': (s2.reshape([-1]).tobytes(), 'byte'),
-                            'x3': (s3.reshape([-1]).tobytes(), 'byte'),
-                            't0':(str(t0).encode('utf-8'), 'byte'),
-                            't1':(str(t1).encode('utf-8'), 'byte'),
-                        })
-                        cout+=1
+                    # if np.all(t0==0): #and random.randint(0, 100)!=5: 
+                    if t0==[[]]*seg_width: 
+                        continue
+                    z0.append((t0,s0,s2))
+                for t1, s1 ,s3 in zip(targets1, list(split_audio1),list(split_audio3)):
+                    # print(178,s.shape)
+                    if t1==[[]]*seg_width: #and random.randint(0, 100)!=5:  
+                        continue
+                    z1.append((t1,s1,s3))
+                random.shuffle(z1)
+                random.shuffle(z0)                
+                for j in range(min(len(z1),len(z0))):
+                    t0, s0, s2 = z0[j]
+                    t1, s1 ,s3 = z1[j]
+                    # print(246,t0,t1)
+                    writer.write({
+                        'x0': (s0.reshape([-1]).tobytes(), 'byte'),
+                        'x1': (s1.reshape([-1]).tobytes(), 'byte'),
+                        'x2': (s2.reshape([-1]).tobytes(), 'byte'),
+                        'x3': (s3.reshape([-1]).tobytes(), 'byte'),
+                        't0':(str(t0).encode('utf-8'), 'byte'),
+                        't1':(str(t1).encode('utf-8'), 'byte'),
+                    })
+                    cout+=1
+                    if nums:
+                        if cout==nums:
+                            break
             except AssertionError as e: 
                 # print(file,'too short <10s') 
                 continue
@@ -296,23 +305,23 @@ def find_files(root):
             yield os.path.join(d, f)
 
 if __name__ == "__main__":
-    path = args.maestro_path
+    path = args.maestropath
     # stage1 RENDER MIDI TO WAV, you need to makdir ./sf2, and move the .sf2 file into it.
 
-    for home, dirs, files in os.walk(path):
-        for filename in files:
-            # 文件名列表，包含完整路径
-            if 'midi' == filename[-4:] and 'byte' not in filename:
-                # mid_Filelist.append(os.path.join(home, filename))
-                for instrument in instruments:
+    # for home, dirs, files in os.walk(path):
+    #     for filename in files:
+    #         # 文件名列表，包含完整路径
+    #         if 'midi' == filename[-4:] and 'byte' not in filename:
+    #             # mid_Filelist.append(os.path.join(home, filename))
+    #             for instrument in instruments:
                     
-                    dataFile = os.path.join(home, filename[:-4])+instrument+'.wav'
-                    if os.path.exists(dataFile):
-                        print(str(dataFile), 'already exists!')
-                        continue
+    #                 dataFile = os.path.join(home, filename[:-4])+instrument+'.wav'
+    #                 if os.path.exists(dataFile):
+    #                     print(str(dataFile), 'already exists!')
+    #                     continue
    
-                    else:
-                        renderMidi( os.path.join(home, filename), select_midi_soundfont(*instruments[instrument]),instrument) 
+    #                 else:
+    #                     renderMidi( os.path.join(home, filename), select_midi_soundfont(*instruments[instrument]),instrument) 
                 
 
 
@@ -328,11 +337,11 @@ if __name__ == "__main__":
     # stage2 make tfrecord dataset, need to do it for twice, one for training ,one for evaluating, maestrov3 except 2018 is used as traindata,2018 for valid. so you need to edit the hierarchy of folders of maestrov3
 
     output_file =args.traindatasets+'.tfrecord'
-    cout = make_datasets(path, output_file,tag='train')
+    cout = make_datasets(path, output_file,tag='train',nums=80000)
 
     print("train_cout", cout)
     # 0805:train：429405 valid:72055
     output_file =args.validdatasets+'.tfrecord'
-    cout = make_datasets(path, output_file,tag='train')
+    cout = make_datasets(path, output_file,tag='valid',nums=10000)
 
     print("valid_cout", cout)
