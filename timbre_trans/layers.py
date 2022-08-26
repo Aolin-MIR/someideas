@@ -1,7 +1,7 @@
 import json
 import math
 import torch
-import torchvision
+# import torchvision
 import torch.nn as nn
 import numpy as np
 from pdb import set_trace
@@ -165,14 +165,14 @@ class Encoder(nn.Module):
 
 class DecoderLayer(nn.Module):
 
-    def __init__(self, d_model, d_ff, d_k, d_v, n_heads, device):
+    def __init__(self, d_model, d_ff, d_k, d_v, n_heads):
         super(DecoderLayer, self).__init__()
         self.dec_self_attn = MultiHeadAttention(
             d_model=d_model,d_k=d_k,
-            d_v=d_v, n_heads=n_heads, device=device)
+            d_v=d_v, n_heads=n_heads)
         self.dec_enc_attn = MultiHeadAttention(
             d_model=d_model,d_k=d_k,
-            d_v=d_v, n_heads=n_heads, device=device)
+            d_v=d_v, n_heads=n_heads)
         self.pos_ffn = PoswiseFeedForwardNet(
             d_model=d_model, d_ff=d_ff)
 
@@ -184,10 +184,10 @@ class DecoderLayer(nn.Module):
 
 class Decoder(nn.Module):
 
-    def __init__(self, vocab_size, d_model, d_ff, d_k, d_v, n_heads, n_layers, pad_index, device):
+    def __init__(self, vocab_size, d_model, d_ff, d_k, d_v, n_heads, n_layers, pad_index):
         super(Decoder, self).__init__()
         self.pad_index = pad_index
-        self.device = device
+        
         self.tgt_emb = nn.Embedding(
             vocab_size, d_model)
         self.pos_emb = PositionalEncoding(
@@ -198,7 +198,7 @@ class Decoder(nn.Module):
             decoder_layer = DecoderLayer(
                 d_model=d_model, d_ff=d_ff,
                 d_k=d_k, d_v=d_v,
-                n_heads=n_heads, device=device)
+                n_heads=n_heads)
             self.layers.append(decoder_layer)
         self.layers = nn.ModuleList(self.layers)
 
@@ -214,7 +214,7 @@ class Decoder(nn.Module):
         dec_self_attns, dec_enc_attns = [], []
         for layer in self.layers:
             dec_outputs, dec_self_attn, dec_enc_attn = layer(
-                dec_inputs=dec_outputs,
+                dec_inputs=dec_inputs,
                 enc_outputs=enc_outputs,
                 dec_self_attn_mask=dec_self_attn_mask,
                 dec_enc_attn_mask=dec_enc_attn_mask)
@@ -226,7 +226,7 @@ class Decoder(nn.Module):
         dec_self_attns = dec_self_attns.permute([1, 0, 2, 3, 4])
         dec_enc_attns = dec_enc_attns.permute([1, 0, 2, 3, 4])
         
-        return dec_outputs, dec_self_attns, dec_enc_attns
+        return dec_outputs#, dec_self_attns, dec_enc_attns
 
 class MaskedDecoderLayer(nn.Module):
 
