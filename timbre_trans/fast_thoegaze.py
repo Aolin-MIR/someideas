@@ -1,5 +1,8 @@
 import warnings
 warnings.filterwarnings("ignore", category=UserWarning)
+import gc
+import os
+# import objgraph 
 import torch
 # from transformer import MultiHeadAttentionLayer
 from layers import Encoder,PositionalEncoding
@@ -15,21 +18,23 @@ from torch.utils.data.sampler import WeightedRandomSampler
 from torch.autograd import Variable
 import numpy as np
 from tfrecord.torch.dataset import TFRecordDataset
+# import psutil
+
+
 parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.ArgumentDefaultsHelpFormatter)
-# parser.add_argument("--train-dataset", type=str, default='datasets/speech_commands/train', help='path of train dataset')
-# parser.add_argument("--valid-dataset", type=str, default='datasets/speech_commands/valid', help='path of validation dataset')
+
 # parser.add_argument("--background-noise", type=str, default='datasets/speech_commands/train/_background_noise_', help='path of background noise')
 parser.add_argument("--comment", type=str, default='', help='comment in tensorboard title')
-parser.add_argument("--batch_size", type=int, default=64, help='batch size')
+parser.add_argument("--batch_size", type=int, default=128, help='batch size')
 parser.add_argument("--dataload-workers-nums", type=int, default=4, help='number of workers for dataloader')
 parser.add_argument("--weight-decay", type=float, default=1e-2, help='weight decay')
 parser.add_argument("--optim", choices=['sgd', 'adam'], default='sgd', help='choices of optimization algorithms')
-parser.add_argument("--learning-rate", type=float, default=1e-5, help='learning rate for optimization')
+parser.add_argument("--learning-rate", type=float, default=5e-5, help='learning rate for optimization')
 parser.add_argument("--lr-scheduler", choices=['plateau', 'step'], default='plateau', help='method to adjust learning rate')
 parser.add_argument("--lr-scheduler-patience", type=int, default=5, help='lr scheduler plateau: Number of epochs with no improvement after which learning rate will be reduced')
 parser.add_argument("--lr-scheduler-step-size", type=int, default=50, help='lr scheduler step: number of epochs of learning rate decay.')
 parser.add_argument("--lr-scheduler-gamma", type=float, default=0.1, help='learning rate is multiplied by the gamma to decrease it')
-parser.add_argument("--max-epochs", type=int, default=70, help='max number of epochs')
+parser.add_argument("--max-epochs", type=int, default=30, help='max number of epochs')
 parser.add_argument("--resume", type=str, help='checkpoint file to resume')
 parser.add_argument("--segwidth", type=int, default=64, help='')
 parser.add_argument("--dropout", type=float, default=0.1, help='dropout rate')
@@ -87,7 +92,8 @@ class Thoegaze(nn.Module):
         self.pos_emb = PositionalEncoding(
             d_model=d_model,
             dropout=dropout)
-        self.encoder = Encoder(d_model,2048,64,64,8,n_layers,0)
+        self.s_encoder = Encoder(d_model,2048,64,64,8,n_layers,0)
+        self.t_encoder = Encoder(d_model,2048,64,64,8,n_layers,0)
         self.decoder= Encoder(d_model,2048,64,64,8,n_layers,0)
         # en_layers,de_layers=[],[]
         # for _ in range(n_layers):
@@ -104,8 +110,9 @@ class Thoegaze(nn.Module):
         # self.decoder = nn.ModuleList(de_layers)
 
         # self.norm = nn.LayerNorm(H)
-        self.linear = nn.Linear(int(self.d_model/2), 88)
+        self.linear = nn.Linear(self.d_model, 88)
         self.m = nn.Sigmoid()
+        # self.relu = nn.ReLU()
         self.out =nn.Linear(self.d_model, int(args.nfft/2+1))
         assert H == d_model
    
@@ -124,24 +131,27 @@ class Thoegaze(nn.Module):
             x=self.embedding(x)
 
             x = self.pos_emb(x)
-
-            x,_ = self.encoder(x)
-            bs,l,d=x.shape
-            x=x.view(bs,l,-1,2)
-            _s=x[:,:,:,0]
-            _t=x[:,:,:,1]
+            # x=self.relu(x)
+            _s,_ = self.s_encoder(x)
+            _t,_ = self.t_encoder(x)
+            # bs,l,d=x.shape
+            # x=x.view(bs,l,-1,2)
+            # _s=x[:,:,:,0]
+            # _t=x[:,:,:,1]
+            _t=torch.unsqueeze(torch.mean(_t,1),1)
             t.append(_t)
             s.append(_s)
+            
             #Todo:transcription decoder
             if self.use_transcription_loss:
                 transcription_out.append(self.m(self.linear(_s)))
 
 
 
-        y0,_= self.decoder(torch.cat((s[2],t[1]),axis=-1))
-        y1,_= self.decoder(torch.cat((s[3],t[0]),axis=-1))
-        y2,_= self.decoder(torch.cat((s[0],t[3]),axis=-1))
-        y3,_= self.decoder(torch.cat((s[1],t[2]),axis=-1))
+        y0,_= self.decoder(s[2]+t[1])
+        y1,_= self.decoder(s[3]+t[0])
+        y2,_= self.decoder(s[0]+t[3])
+        y3,_= self.decoder(s[1]+t[2])
 
         y0=self.out(y0)
         y1=self.out(y1)
@@ -165,6 +175,8 @@ def criterion(outputs,inputs,score=None,alpha=0.5,beta=1,gamma=1):
             sa = sa.float().cuda()
             sb = sb.float().cuda()
             pos_weight = torch.ones([88]).cuda()
+        else:
+            pos_weight = torch.ones([88])
         bcefn=nn.BCELoss(weight=pos_weight)
         # print(184,_s1.device,sa.device)
         loss_transcription = bcefn(_s1,sa) + bcefn(_s3,sa) +bcefn(_s2,sb)+ bcefn(_s4,sb)
@@ -295,7 +307,8 @@ def note_f1_v2(outputs,sa,sb,adj=None):
 
                     temp=pred[:,:i,:]==target[:,-i:,:]
                     # print(292,temp[0,0,:])
-                    temp=temp.type(torch.int)*target[:,-i:,:]
+                    temp=temp.type(torch.int)
+                    temp=temp*target[:,-i:,:]
 
                     c+=torch.count_nonzero(temp)
                     # temp=nn.functional.pad(temp,(0,0,0,-i,0,0),'constant',value=0)
@@ -308,7 +321,8 @@ def note_f1_v2(outputs,sa,sb,adj=None):
                     # print(286,pred[:,i:,:].size(),target[:,:-i,:].size())
                     temp=pred[:,i:,:]==target[:,:-i,:]
 
-                    temp=temp.type(torch.int)*target[:,:-i,:]
+                    temp=temp.type(torch.int)
+                    temp=temp*target[:,:-i,:]
 
                     c+=torch.count_nonzero(temp)
                     # temp=nn.functional.pad(temp,(0,0,i,0,0,0),'constant',value=0)*target
@@ -318,12 +332,14 @@ def note_f1_v2(outputs,sa,sb,adj=None):
                     # print(286,pred[:,i:,:].size(),target[:,:-i,:].size())
                     temp=pred==target
 
-                    temp=temp.type(torch.int)*target
+                    temp=temp.type(torch.int)
+                    temp=temp*target
                     c+=torch.count_nonzero(temp)
                     # temp=torch.nn.functional.pad(temp,(0,0,i,0,0,0),'constant',value=0)
                 
                     target-=temp 
                 # print(321,c,torch.count_nonzero(pred))
+        # print(332,tp,tt,c)
         return tp,tt,c
             
     tp,tt,c=calc(pred,target)
@@ -365,6 +381,7 @@ def train(epoch):
         # inputs = torch.unsqueeze(inputs, 1)
         # targets = batch['target']\
         x0,x1,x2,x3,t0,t1=batch['x0'],batch['x1'],batch['x2'],batch['x3'],batch['t0'],batch['t1']
+        del batch
 
         if use_gpu:
             x0 = x0.cuda()
@@ -387,10 +404,10 @@ def train(epoch):
         # statistics
         it += 1
         global_step += 1
-        running_loss += loss
+        running_loss += loss.item()
 
-        running_loss_trans += loss_trans
-        running_loss_syth += loss_syth
+        running_loss_trans += loss_trans.item()
+        running_loss_syth += loss_syth.item()
         # pred = outputs.data.max(1, keepdim=True)[1]
         # correct += pred.eq(targets.data.view_as(pred)).sum()
         # total += targets.size(0)
@@ -400,7 +417,15 @@ def train(epoch):
         # '%s/loss_s' % loss_s, 
         # '%s/loss_trans' % loss_trans
         # )
+        # mem = psutil.virtual_memory()
+        # # 系统总计内存
+        # # zj = float(mem.total) / 1024 / 1024 / 1024
+        # # 系统已经使用内存
+        # ysy = float(mem.used) / 1024 / 1024 / 1024
 
+        # # 系统空闲内存
+        # kx = float(mem.free) / 1024 / 1024 / 1024
+        # bj = psutil.Process(os.getpid()).memory_info().rss / 1024 / 1024
         # update the progress bar
         pbar.set_postfix({'epoch':str(epoch+1),
             'train_loss': "%.05f" % (running_loss / it),
@@ -408,10 +433,15 @@ def train(epoch):
             # 'loss_t': "%.05f" % (running_loss_t / it),
             'loss_trans': "%.05f" % (running_loss_trans / it),
             'loss_syth': "%.05f" % (running_loss_syth / it),
+                        # '系统总计内存':"%.05f" % zj,
+    #    '系统已经使用内存':"%.05f" % ysy,
+    #     '系统空闲内存':"%.05f" % kx,
+    #             '本进程占用内存(MB)':"%.05f" % (bj),
         })
 
+        # print('本进程占用内存(MB)%.05f' % (bj))
     # accuracy = correct/total
-    epoch_loss = running_loss / it
+    # epoch_loss = running_loss / it
     print('epoch:',epoch+1,' done')
     # writer.add_scalar('%s/accuracy' % phase, 100*accuracy, epoch)
     # writer.add_scalar('%s/epoch_loss' % phase, epoch_loss, epoch)
@@ -440,10 +470,7 @@ def valid(epoch):
     for batch in pbar:
         if it==total_it:
             break
-
         x0,x1,x2,x3,t0,t1=batch['x0'],batch['x1'],batch['x2'],batch['x3'],batch['t0'],batch['t1']
-
-
         if use_gpu:
             x0 = x0.cuda()
             x1 = x1.cuda()
@@ -451,44 +478,40 @@ def valid(epoch):
             x3 = x3.cuda()
             t0 = t0.cuda()
             t1 = t1.cuda()
-
-
-
+        del batch
         # forward/backward
-        outputs = model([x0,x1,x2,x3])
-        
+        outputs = model([x0,x1,x2,x3])     
         loss,loss_trans,loss_syth  = criterion(outputs, [x0,x1,x2,x3],[t0,t1],alpha=args.alpha,beta=args.beta,gamma=args.gamma)
-
         #加速noteF1的计算
-
         metric=note_f1_v2(outputs,t0,t1)
-
-
-
         # statistics
         it += 1
         global_step += 1
-        running_loss += loss
+        running_loss += loss.item()
         # running_loss_s += loss_s
         # running_loss_t += loss_t
-        running_loss_trans += loss_trans
-        running_loss_syth += loss_syth
+        running_loss_trans += loss_trans.item()
+        running_loss_syth += loss_syth.item()
         count+=metric['count']
         tt+=metric['tt']
         tp+=metric['tp']
         r = count/(tt+epsilon)
         p = count/(tp+epsilon)
-        # print(463,r,p)
+
         nf1 = 2 * (p*r) / (r + p + epsilon)
-        # writer.add_scalar('%s/loss' %  loss, 
-        # '%s/loss_t' %  loss_t, 
-        # '%s/loss_s' % loss_s, 
-        # '%s/loss_trans' % loss_trans,
-        
-        # '%s/note_f1' % metric['note_f1']
 
-        # )
+        # mem = psutil.virtual_memory()
+        # # 系统总计内存
+        # # zj = float(mem.total) / 1024 / 1024 / 1024
+        # # 系统已经使用内存
+        # ysy = float(mem.used) / 1024 / 1024 / 1024
 
+        # # 系统空闲内存
+        # kx = float(mem.free) / 1024 / 1024 / 1024
+        # bj = psutil.Process(os.getpid()).memory_info().rss / 1024 / 1024
+        # print('系统总计内存:%d.3GB' % zj)
+        # print('系统已经使用内存:%d.3GB' % ysy)
+        # print('系统空闲内存:%d.3GB' % kx)
         # update the progress bar
         pbar.set_postfix({
             'valid_loss': "%.05f" % (running_loss / it),
@@ -496,11 +519,16 @@ def valid(epoch):
             # 'loss_t': "%.05f" % (running_loss_t / it),
             'loss_trans': "%.05f" % (running_loss_trans / it),
             'loss_syth': "%.05f" % (running_loss_syth / it),
-            'note_f1':"%.05f" % (nf1)
+            'note_f1':"%.05f" % (nf1),
+            # '系统总计内存':"%.05f" % zj,
+    #    '系统已经使用内存':"%.05f" % ysy,
+    #     '系统空闲内存':"%.05f" % kx,
+    #     '本进程占用内存(MB)':"%.05f" % (bj),
         })
 
+        # print('本进程占用内存(MB)%.05f' % (bj))
     # accuracy = correct/total
-    epoch_loss = (running_loss / it).tolist()
+    epoch_loss = (running_loss / it)#.tolist()
     # writer.add_scalar('%s/accuracy' % phase, 100*accuracy, epoch)
     # writer.add_scalar('%s/epoch_loss' % phase, epoch_loss, epoch)
 
@@ -522,10 +550,10 @@ def valid(epoch):
         
         best_loss = epoch_loss
         torch.save(checkpoint, './checkpoints/best-loss-tt-checkpoint-%s.pth' % full_name)
-        torch.save(model, './checkpoints/%d-%s-best-los-tt.pth' % (start_timestamp, full_name))
+        torch.save(model, './checkpoints/%s-best-los-tt.pth' % ( full_name))
     else:
         torch.save(checkpoint, './checkpoints/last-tt.pth')
-        del checkpoint  # reduce memory
+    del checkpoint  # reduce memory
 
     return epoch_loss
 def get_lr():
@@ -547,28 +575,29 @@ def parse_fn(features):
     #     assert 1==2
     _features=eval(features['t0'])
     # print(707,_features)
-    _temp=np.zeros((args.segwidth,88),np.float32)
+    features['t0']=torch.zeros(args.segwidth,88,dtype=torch.float32)
     for i,x in enumerate(_features):
 
         for y in x:
-            _temp[i][y]=1
-    features['t0']=_temp        
-    _features=eval(features['t1'])
+            features['t0'][i][y]=1
+    del _features
+    _features1=eval(features['t1'])
     # print(707,type(_features))
-    _temp=np.zeros((args.segwidth,88),np.float32)
-    for i,x in enumerate(_features):
+    features['t1']=torch.zeros(args.segwidth,88,dtype=torch.float32)
+    for i,x in enumerate(_features1):
 
         for y in x:
-            _temp[i][y]=1    
-    features['t1']=_temp
-
+            features['t1'][i][y]=1    
+    del _features1
     # features['x0'] = torch.from_numpy(features['x0'],copy=)
     # features['x1'] = torch.from_numpy(features['x1'])
     # features['x2'] = torch.from_numpy(features['x2'])
     # features['x3'] = torch.from_numpy(features['x3'])
     # features['t0'] = torch.from_numpy(features['t0'])
     # features['t1'] = torch.from_numpy(features['t1'])
-
+    # gc.collect()
+    #     # objgraph.show_most_common_types(limit=50)
+    # objgraph.show_growth()
     return features
 
 
@@ -658,6 +687,7 @@ if __name__=="__main__":
     print("training %s for thoegazer..." % 'transformer ')
     since = time.time()
     for epoch in range(start_epoch, args.max_epochs):
+
         if args.lr_scheduler == 'step':
             lr_scheduler.step()
         
