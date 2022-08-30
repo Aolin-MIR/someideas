@@ -18,13 +18,15 @@ from torch.utils.data.sampler import WeightedRandomSampler
 from torch.autograd import Variable
 import numpy as np
 from tfrecord.torch.dataset import TFRecordDataset
-# import psutil
-
+from torch.nn.utils.rnn import pad_sequence
+import torch.nn.functional as F
 
 parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.ArgumentDefaultsHelpFormatter)
 
 # parser.add_argument("--background-noise", type=str, default='datasets/speech_commands/train/_background_noise_', help='path of background noise')
 parser.add_argument("--comment", type=str, default='', help='comment in tensorboard title')
+parser.add_argument("--traindata_path", type=str, default='/data/traindatasets_small.tfrecord', help='')
+parser.add_argument("--validdata_path", type=str, default='/data/validdatasets_small.tfrecord', help='')
 parser.add_argument("--batch_size", type=int, default=128, help='batch size')
 parser.add_argument("--dataload-workers-nums", type=int, default=4, help='number of workers for dataloader')
 parser.add_argument("--weight-decay", type=float, default=1e-2, help='weight decay')
@@ -85,7 +87,7 @@ class Thoegaze(nn.Module):
         use_transcription_loss=True
     ):
         super().__init__()
-        self.d_model = H = d_model
+        self.d_model  = d_model
         self.unet = unet
         self.use_transcription_loss=use_transcription_loss
         self.embedding = nn.Linear(int(args.nfft/2+1),self.d_model)
@@ -95,7 +97,7 @@ class Thoegaze(nn.Module):
         self.s_encoder = Encoder(d_model,2048,64,64,8,n_layers,0)
         self.t_encoder = Encoder(d_model,2048,64,64,8,n_layers,0)
         self.decoder= Encoder(d_model,2048,64,64,8,n_layers,0)
-        self.s_decoder=Decoder(args.segwidth+90,d_model,2048,64,64,8,4,0)
+        # self.s_decoder=Decoder(args.segwidth+90,d_model,2048,64,64,8,4,0,use_cuda=torch.cuda.is_available())
         # en_layers,de_layers=[],[]
         # for _ in range(n_layers):
 
@@ -111,13 +113,18 @@ class Thoegaze(nn.Module):
         # self.decoder = nn.ModuleList(de_layers)
 
         # self.norm = nn.LayerNorm(H)
-        self.linear = nn.Linear(self.d_model, 88)
+        self.linear = nn.Linear(self.d_model, 90+args.segwidth)
         self.m = nn.Softmax(dim=-1)
         # self.relu = nn.ReLU()
         self.out =nn.Linear(self.d_model, int(args.nfft/2+1))
         # assert H == d_model
-        # decoder_layer = nn.TransformerDecoderLayer(d_model=512, nhead=8)
-        # transformer_decoder = nn.TransformerDecoder(decoder_layer, num_layers=6)
+        decoder_layer = nn.TransformerDecoderLayer(d_model=self.d_model, nhead=8,activation='gelu')
+        self.tgt_emb = nn.Embedding(
+            args.segwidth+90, d_model)
+        self.pos_emb = PositionalEncoding(
+            d_model=d_model,
+            dropout=0)
+        self.s_decoder = nn.TransformerDecoder(decoder_layer, num_layers=6)
         # memory = torch.rand(10, 32, 512)
         # tgt = torch.rand(20, 32, 512)
         # out = transformer_decoder(tgt, memory)
@@ -146,13 +153,28 @@ class Thoegaze(nn.Module):
             _t=torch.unsqueeze(torch.mean(_t,1),1)
             t.append(_t)
             s.append(_s)
-            if i%2==0:
-                decoder_input=decoder_input[0]
-            else:
-                decoder_input=decoder_input[1]
+
             #Todo:transcription decoder
             if self.use_transcription_loss:
-                transcription_out.append(self.m(self.decoder(decoder_input,x,_s)))
+                if i%2==0:
+                    decoder_input=decoder_inputs[0]
+                else:
+                    decoder_input=decoder_inputs[1]
+                decoder_input = self.tgt_emb(decoder_input)
+                decoder_input = self.pos_emb(decoder_input)
+                ds=decoder_input.size()[1]
+                ss= _s.size()[1]
+                bs=decoder_input.size()[0]
+                mem_mask=None
+                if ss<ds:
+                    mem_mask=torch.ones(bs,ss)
+                    mem_mask=nn.functional.pad(mem_mask,(0,ds-ss,0,0),'constant',value=0)  
+                    mem_mask=torch.t(mem_mask)
+                    if use_gpu:
+                        mem_mask=mem_mask.cuda()
+                    _s=nn.functional.pad(_s,(0,0,0,ds-ss,0,0),'constant',value=0)  
+                # print(165,decoder_input.size(),_s.size())  
+                transcription_out.append(self.m(self.linear(self.s_decoder(decoder_input,_s,memory_key_padding_mask=mem_mask))))
 
 
 
@@ -178,13 +200,7 @@ class Thoegaze(nn.Module):
         assert (
             decoder_start_token_id is not None
         ), "self.model.config.decoder_start_token_id has to be defined. In T5 it is usually set to the pad_token_id. See T5 docs for more information"
-        # print(786,type(input_ids),input_ids)
-        # shift inputs to the right
-        # if is_torch_fx_proxy(input_ids):
-        #     # Item assignment is not supported natively for proxies.
-        #     shifted_input_ids = torch.full(input_ids.shape[:-1] + (1,), decoder_start_token_id)
-        #     shifted_input_ids = torch.cat([shifted_input_ids, input_ids[..., :-1]], dim=-1)
-        # else:
+        # print(184,type(input_ids),len(input_ids))
         shifted_input_ids = input_ids.new_zeros(input_ids.shape)
         shifted_input_ids[..., 1:] = input_ids[..., :-1].clone()
         shifted_input_ids[..., 0] = decoder_start_token_id
@@ -204,14 +220,15 @@ def criterion(outputs,inputs,score=None,alpha=0.5,beta=1,gamma=1):
         y1,y2,y3,y4,_s1,_s2,_s3,_s4=outputs
         sa,sb=score
         if use_gpu:
-            sa = sa.float().cuda()[1:, :]
-            sb = sb.float().cuda()[1:, :]
-            pos_weight = torch.ones([88]).cuda()
-        else:
-            pos_weight = torch.ones([88])
-        sfn = torch.nn.CrossEntropyLoss(ignore_index=0)
-        # print(184,_s1.device,sa.device)
-        loss_transcription = sfn(_s1,sa) + sfn(_s3,sa) +sfn(_s2,sb)+ sfn(_s4,sb)
+            sa = sa.cuda()[:, :]
+            sb = sb.cuda()[:, :]
+        sa=F.one_hot(sa,args.segwidth+90).float()
+        sb=F.one_hot(sb,args.segwidth+90).float()
+        sfn = torch.nn.CrossEntropyLoss()
+        # print(184,_s1.dtype,sa.dtype)
+        
+        loss_transcription = sfn(_s1[:,:,:],sa) + sfn(_s3[:,:,:],sa) +sfn(_s2[:,:,:],sb)+ sfn(_s4[:,:,:],sb)
+
     else:
         y1,y2,y3,y4=outputs
 
@@ -389,6 +406,79 @@ def note_f1_v2(outputs,sa,sb,adj=None):
     # print({'note_f1': f1, 'precision': p, 'recall': r})
     # print(328,tp,tt,c)
     return {'count':count,'tt':total_true,'tp':total_pred}
+def note_f1_v3(outputs,sa,sb):
+    '''Calculate note-F1 score.  
+    Returns
+    -------
+    dict    
+    '''
+    # print(24, evalPrediction.predictions.shape)
+    total_pred = 0
+    total_true = 0
+    count = 0
+    _s1,_s2,_s3,_s4=outputs[-4:]
+    pred=torch.cat([_s1,_s2,_s3,_s4],axis=0)
+    target=torch.cat([sa,sb,sa,sb],axis=0)
+
+    for y_pred, y_true in zip(pred,target):
+
+        assert y_true.ndim == 1
+        assert y_pred.ndim == 1 or y_pred.ndim == 2
+
+        if y_pred.ndim == 2:
+            # print(64)
+            y_pred = y_pred.argmax(dim=1)
+
+        y_pred = y_pred.tolist()
+
+        try:
+            y_pred = y_pred[:y_pred.index(0)]
+        except ValueError as e:
+            pass
+        temp_t=[]
+        temp=-1
+        for y in y_true:
+            if y>=90:
+                temp=y-90
+            elif y>1:
+                if temp>=0:
+                    temp_t.append(temp*88+y-2)
+        temp_p=[]       
+        temp=-1
+        for y in y_pred:
+            if y>=90:
+                temp=y-90
+            elif y>1:
+                if temp>=0:
+                    temp_p.append(temp*88+y-2)
+
+        y_pred = [((x-2)//88, (x-2) % 88)
+                for x in y_pred if x not in [0,1]]
+
+        total_pred += len(y_pred)
+        y_true = y_true.tolist()
+        y_true = [x for x in y_true if x not in [0,1]]
+        total_true += len(y_true)
+        for i in y_true:
+            # if i ==1:
+            #     break
+            # if i == seg_width*88+1:
+            #     continue
+            relt_true = (i-2)//88
+            note_true = (i-2) % 88
+            for j in y_pred[:]:
+                if j[1] == note_true and j[0] in range(max(0, relt_true-5), relt_true+5):
+                    count += 1
+                    y_pred.remove(j)
+                    break
+    epsilon = 1e-7
+    # print(57,total_true,total_pred)
+    # r = count/(total_true+epsilon)
+    # p = count/(total_pred+epsilon)
+
+    # f1 = 2 * (p*r) / (r + p + epsilon)
+    # print({'note_f1': f1, 'precision': p, 'recall': r})
+    return {'count':count,'tt':total_true,'tp':total_pred}
 
 def train(epoch):
     global global_step
@@ -408,10 +498,7 @@ def train(epoch):
     for batch in pbar:
         if it==total_it:
             break
-        # batch=next(iter(train_dataloader))
-        # inputs = batch['input']
-        # inputs = torch.unsqueeze(inputs, 1)
-        # targets = batch['target']\
+
         x0,x1,x2,x3,t0,t1=batch['x0'],batch['x1'],batch['x2'],batch['x3'],batch['t0'],batch['t1']
         del batch
 
@@ -425,8 +512,9 @@ def train(epoch):
 
 
 
+
         # forward/backward
-        outputs = model([x0,x1,x2,x3])
+        outputs = model([x0,x1,x2,x3],[t0,t1])
         
         loss,loss_trans,loss_syth = criterion(outputs, [x0,x1,x2,x3],[t0,t1],alpha=args.alpha,beta=args.beta,gamma=args.gamma)
         optimizer.zero_grad()
@@ -440,25 +528,7 @@ def train(epoch):
 
         running_loss_trans += loss_trans.item()
         running_loss_syth += loss_syth.item()
-        # pred = outputs.data.max(1, keepdim=True)[1]
-        # correct += pred.eq(targets.data.view_as(pred)).sum()
-        # total += targets.size(0)
-
-        # writer.add_scalar('%s/loss' %  loss, 
-        # '%s/loss_t' %  loss_t, 
-        # '%s/loss_s' % loss_s, 
-        # '%s/loss_trans' % loss_trans
-        # )
-        # mem = psutil.virtual_memory()
-        # # 系统总计内存
-        # # zj = float(mem.total) / 1024 / 1024 / 1024
-        # # 系统已经使用内存
-        # ysy = float(mem.used) / 1024 / 1024 / 1024
-
-        # # 系统空闲内存
-        # kx = float(mem.free) / 1024 / 1024 / 1024
-        # bj = psutil.Process(os.getpid()).memory_info().rss / 1024 / 1024
-        # update the progress bar
+ 
         pbar.set_postfix({'epoch':str(epoch+1),
             'train_loss': "%.05f" % (running_loss / it),
             # 'loss_s': "%.05f" % (running_loss_s / it),
@@ -502,6 +572,12 @@ def valid(epoch):
     for batch in pbar:
         if it==total_it:
             break
+        # x0=torch.tensor([x['x0'] for x in batch])
+        # x1=torch.tensor([x['x1'] for x in batch])
+        # x2=torch.tensor([x['x2'] for x in batch])
+        # x3=torch.tensor([x['x3'] for x in batch])
+        # t0=torch.tensor([x['t0'] for x in batch])
+        # t1=torch.tensor([x['t1'] for x in batch])
         x0,x1,x2,x3,t0,t1=batch['x0'],batch['x1'],batch['x2'],batch['x3'],batch['t0'],batch['t1']
         if use_gpu:
             x0 = x0.cuda()
@@ -512,10 +588,10 @@ def valid(epoch):
             t1 = t1.cuda()
         del batch
         # forward/backward
-        outputs = model([x0,x1,x2,x3])     
+        outputs = model([x0,x1,x2,x3],[t0,t1])     
         loss,loss_trans,loss_syth  = criterion(outputs, [x0,x1,x2,x3],[t0,t1],alpha=args.alpha,beta=args.beta,gamma=args.gamma)
         #加速noteF1的计算
-        metric=note_f1_v2(outputs,t0,t1)
+        metric=note_f1_v3(outputs,t0,t1)
         # statistics
         it += 1
         global_step += 1
@@ -625,6 +701,15 @@ def parse_fn(features):
             for y in x:
                 features['t1'].append(y+2+args.segwidth)
     del _features1
+    if len(features['t0'])>args.segwidth:
+        features['t0']=features['t0'][:args.segwidth]
+    else:
+        features['t0'] += [0]*(args.segwidth-len(features['t0']))
+    if len(features['t1'])>args.segwidth:
+        features['t1']=features['t1'][:args.segwidth]
+    else:
+        features['t1'] += [0]*(args.segwidth-len(features['t1']))
+    
     features['t0']=torch.tensor(features['t0'])
     features['t1']=torch.tensor(features['t1'])
     # features['x0'] = torch.from_numpy(features['x0'],copy=)
@@ -638,6 +723,63 @@ def parse_fn(features):
     # objgraph.show_growth()
     return features
 
+
+
+class PadCollate:
+    """
+    a variant of callate_fn that pads according to the longest sequence in
+    a batch of sequences
+    """
+
+    def __init__(self):
+        pass
+
+    def pad_collate(self, features):
+        # print(721,type(features),len(features))
+        # print(722,type(features['t0']))
+        max_t0_len=args.segwidth#min(max([len(x['t0']) for x in features]),args.segwidth)
+        max_t1_len=args.segwidth#min(max([len(x['t1']) for x in features]),args.segwidth)
+        for feature in features:
+            if len(feature['t0'])>max_t0_len:
+                feature['t0']=feature['t0'][:max_t0_len]
+            else:
+                remainder0 = [0] * \
+                    (max_t0_len - len(feature['t0']))
+
+                
+                if isinstance(feature['t0'], list):
+                    
+                    features['t0'] = (
+                        feature['t0'] +
+                        remainder0 
+                    )
+                    
+                else:
+                    feature['t0'] = np.concatenate( [feature['t0'], remainder0]).astype(np.int64)
+            if len(feature['t1'])>max_t0_len:
+                feature['t1']=feature['t1'][:max_t1_len]
+            else:    
+                remainder1 = [0] * \
+                    (max_t1_len - len(feature['t1']))
+                # features['t1l'].append(len(feature))
+                if isinstance(feature['t1'], list):
+                    feature['t1'] = (
+                        feature['t1'] +
+                        remainder1 
+                    )
+                else:
+                    feature['t1'] = np.concatenate(
+                        [feature['t1'], remainder1]).astype(np.int64)
+
+        return features
+
+    def __call__(self, batch):
+        return self.pad_collate(batch)
+# train_data = MyDataset('train.txt', is_train=True)
+# train_loader = DataLoader(train_data, batch_size=2, num_workers=0, shuffle=True, collate_fn=collate_train)
+# for batch in train_loader:
+#     seq, label, seq_len = batch
+#     print(seq)
 
 index_path = None
 
@@ -660,8 +802,8 @@ if __name__=="__main__":
     # bg_dataset = BackgroundNoiseDataset(args.background_noise, data_aug_transform)
     # add_bg_noise = AddBackgroundNoiseOnSTFT(bg_dataset)
     # train_feature_transform = Compose([ToMelSpectrogramFromSTFT(n_mels=n_mels), DeleteSTFT(), ToTensor('mel_spectrogram', 'input')])
-    train_path='./mae_timbre_small0805.tfrecord'
-    valid_path='./mae_timbre_small0805_valid.tfrecord'
+    train_path=args.traindata_path
+    valid_path=args.validdata_path
     description = {"x0": "byte", "x1":"byte","x2": "byte", "x3":"byte","t0": "byte", "t1":"byte"}
     train_dataset = CustomTFRecordDataset(train_path, None, description,
                                     shuffle_queue_size=256, transform=parse_fn,length=args.train_nums)
@@ -671,9 +813,11 @@ if __name__=="__main__":
     # weights = train_dataset.make_weights_for_balanced_classes()
     # sampler = WeightedRandomSampler(weights, len(weights))
     train_dataloader = DataLoader(train_dataset, batch_size=args.batch_size,shuffle=False,
-                                pin_memory=use_gpu, num_workers=args.dataload_workers_nums)
+                                pin_memory=use_gpu, num_workers=args.dataload_workers_nums,)
+                                # collate_fn=PadCollate())
     valid_dataloader = DataLoader(valid_dataset, batch_size=args.batch_size, shuffle=False,
-                                pin_memory=use_gpu, num_workers=args.dataload_workers_nums)
+                                pin_memory=use_gpu, num_workers=args.dataload_workers_nums,)
+                                # collate_fn=PadCollate())
 
 
     # a name used to save checkpoints etc.
