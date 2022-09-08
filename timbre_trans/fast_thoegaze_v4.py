@@ -165,7 +165,7 @@ class Thoegaze(nn.Module):
         
 
         self.linear = nn.Linear(self.d_model, 91+args.segwidth)
-        self.m = nn.Softmax(dim=-1)
+        # self.m = nn.Softmax(dim=-1)
         # self.relu = nn.ReLU()
         self.out =nn.Linear(self.d_model, int(args.nfft/2+1))
 
@@ -217,8 +217,8 @@ class Thoegaze(nn.Module):
                 if use_gpu:
                     mem_mask=mem_mask.cuda()
                 _s=nn.functional.pad(_s,(0,0,0,int(ss/2),0,0),'constant',value=0)  
-                transcription_out.append(self.m(self.linear(self.s_decoder(input_ids=decoder_input,encoder_hidden_states=_s,encoder_attention_mask=mem_mask,use_cache=True
-                )[0])))
+                transcription_out.append(self.linear(self.s_decoder(input_ids=decoder_input,encoder_hidden_states=_s,encoder_attention_mask=mem_mask,use_cache=True
+                )[0]))
 
 
 
@@ -264,14 +264,14 @@ def criterion(outputs,inputs,score=None,alpha=0.5,beta=1,gamma=1):
         y1,y2,y3,y4,_s1,_s2,_s3,_s4=outputs
         sa,sb=score
         if use_gpu:
-            sa = sa.cuda()
-            sb = sb.cuda()
+            sa = sa.cuda().long()
+            sb = sb.cuda().long()
         # sa=F.one_hot(sa,args.segwidth+91).float()
         # sb=F.one_hot(sb,args.segwidth+91).float()
         sfn = torch.nn.CrossEntropyLoss(size_average=True,reduce=True,ignore_index=0)
 
         
-        loss_transcription = sfn(_s1,sa) + sfn(_s3,sa) +sfn(_s2,sb)+ sfn(_s4,sb)
+        loss_transcription = sfn(torch.transpose(_s1, -2, -1),sa) + sfn(torch.transpose(_s3, -2, -1),sa) +sfn(torch.transpose(_s2, -2, -1),sb)+ sfn(torch.transpose(_s4, -2, -1),sb)
 
     else:
         y1,y2,y3,y4=outputs
@@ -353,7 +353,8 @@ def note_f1_v3(outputs,sa,sb):
                     count += 1
                     temp_p.remove(j)
                     break
-
+        del temp_t
+        del temp_p
     # print(57,total_true,total_pred)
     # r = count/(total_true+epsilon)
     # p = count/(total_pred+epsilon)
