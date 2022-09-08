@@ -268,6 +268,7 @@ def criterion(outputs,inputs,score=None,alpha=0.5,beta=1,gamma=1):
             sb = sb.cuda().long()
         # sa=F.one_hot(sa,args.segwidth+91).float()
         # sb=F.one_hot(sb,args.segwidth+91).float()
+        # print(271,sa.size())
         sfn = torch.nn.CrossEntropyLoss(size_average=True,reduce=True,ignore_index=0)
 
         
@@ -583,12 +584,13 @@ def parse_fn(features):
     else:
         features['t0'] += [2]#eos
         features['t0'] += [0]*(int(1.5*args.segwidth)-len(features['t0']))
+        
     if len(features['t1'])>int(1.5*args.segwidth-1):
         features['t1']=features['t1'][:int(1.5*args.segwidth)-1]+[2]
     else:
-        features['t0'] += [2]#eos
+        features['t1'] += [2]#eos
         features['t1'] += [0]*(int(1.5*args.segwidth)-len(features['t1']))
-    
+    # print(592,len(features['t1']))
     features['t0']=torch.tensor(features['t0'])
     features['t1']=torch.tensor(features['t1'])
 
