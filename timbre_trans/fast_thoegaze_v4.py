@@ -67,6 +67,7 @@ class MyConfig(T5Config):
         self.input_length = input_length
         super().__init__(
             **kwargs)
+
 config = MyConfig(vocab_size=91+args.segwidth, input_length=args.segwidth, use_position_embed=True, return_dict=False,use_dense=False, d_model=args.dmodel, d_kv=64, d_ff=1024, num_layers=args.layers, num_decoder_layers=None, num_heads=8, relative_attention_num_buckets=32, dropout_rate=args.dropout,
                   layer_norm_epsilon=1e-06, initializer_factor=1.0, feed_forward_proj='relu', is_encoder_decoder=True, use_cache=False,
                   bos_token_id=1,
@@ -191,12 +192,9 @@ class Thoegaze(nn.Module):
             # x=self.relu(x)
             _s= self.s_encoder(inputs_embeds=x)[0]
             _t = self.t_encoder(inputs_embeds=x)[0]
-            # bs,l,d=x.shape
-            # x=x.view(bs,l,-1,2)
-            # _s=x[:,:,:,0]
-            # _t=x[:,:,:,1]
+
             _t=torch.unsqueeze(torch.mean(_t,1),1)
-            # print(180,_t.size())
+
             t.append(_t)
             s.append(_s)
 
@@ -223,7 +221,7 @@ class Thoegaze(nn.Module):
                 )[0])))
 
 
-        # print(207,transcription_out[0].size())
+
         y0= self.decoder(inputs_embeds=s[2]+t[1])[0]
         y1= self.decoder(inputs_embeds=s[3]+t[0])[0]
         y2= self.decoder(inputs_embeds=s[0]+t[3])[0]
@@ -266,14 +264,14 @@ def criterion(outputs,inputs,score=None,alpha=0.5,beta=1,gamma=1):
         y1,y2,y3,y4,_s1,_s2,_s3,_s4=outputs
         sa,sb=score
         if use_gpu:
-            sa = sa.cuda()[:, :]
-            sb = sb.cuda()[:, :]
-        sa=F.one_hot(sa,args.segwidth+91).float()
-        sb=F.one_hot(sb,args.segwidth+91).float()
-        sfn = torch.nn.CrossEntropyLoss()
+            sa = sa.cuda()
+            sb = sb.cuda()
+        # sa=F.one_hot(sa,args.segwidth+91).float()
+        # sb=F.one_hot(sb,args.segwidth+91).float()
+        sfn = torch.nn.CrossEntropyLoss(size_average=True,reduce=True,ignore_index=0)
 
         
-        loss_transcription = sfn(_s1[:,:,:],sa) + sfn(_s3[:,:,:],sa) +sfn(_s2[:,:,:],sb)+ sfn(_s4[:,:,:],sb)
+        loss_transcription = sfn(_s1,sa) + sfn(_s3,sa) +sfn(_s2,sb)+ sfn(_s4,sb)
 
     else:
         y1,y2,y3,y4=outputs
@@ -309,7 +307,7 @@ def note_f1_v3(outputs,sa,sb):
         assert y_pred.ndim == 1 or y_pred.ndim == 2
 
         if y_pred.ndim == 2:
-            # print(64)
+
             y_pred = y_pred.argmax(dim=1)
 
         y_pred = y_pred.tolist()
@@ -319,44 +317,41 @@ def note_f1_v3(outputs,sa,sb):
         except ValueError as e:
             pass
         temp_t=[]
-        temp=-1
+        segnum=-1
         for y in y_true:
             if y==2:
                 break
-            elif y>=91:
-                temp=y-91
-            elif y>2:
-                if temp>=0:
-                    temp_t.append(temp*88+y-3)
+            elif 3<=y<args.segwith+3:
+                segnum=y-3
+            elif y>=args.segwith+3:
+                if segnum>=0:
+                    temp_t.append((segnum,y-args.segwith-3))
         temp_p=[]       
-        temp=-1
+        segnum=-1
         for y in y_pred:
             if y==2:
                 break
-            elif y>=91:
-                temp=y-91
-            elif y>2:
-                if temp>=0:
-                    temp_p.append(temp*88+y-3)
+            elif 3<=y<args.segwith+3:
+                segnum=y-3
+            elif y>=args.segwith+3:
+                if segnum>=0:
+                    temp_p.append((segnum,y-args.segwith-3))
 
-        y_pred = [((x-3)//88, (x-3) % 88)
-                for x in y_pred if x not in [0,1,2]]
+        # temp_p = [((x)//88, (x) % 88)
+        #         for x in temp_p ]
 
-        total_pred += len(y_pred)
-        y_true = y_true.tolist()
-        y_true = [x for x in y_true if x not in [0,1]]
-        total_true += len(y_true)
-        for i in y_true:
-            # if i ==1:
-            #     break
-            # if i == seg_width*88+1:
-            #     continue
-            relt_true = (i-2)//88
-            note_true = (i-2) % 88
-            for j in y_pred[:]:
+        total_pred += len(temp_p)
+        # temp_t = temp_t.tolist()
+        # temp_t = [x for x in temp_t]
+        total_true += len(temp_t)
+        for i in temp_t:
+
+            relt_true = i[0]
+            note_true = i[1]
+            for j in temp_p[:]:
                 if j[1] == note_true and j[0] in range(max(0, relt_true-5), relt_true+5):
                     count += 1
-                    y_pred.remove(j)
+                    temp_p.remove(j)
                     break
 
     # print(57,total_true,total_pred)
@@ -564,24 +559,23 @@ def parse_fn(features):
     #     print(features['inputs_embeds'].shape, features['labels'])
     #     assert 1==2
     _features=eval(features['t0'])
-    # print(707,_features)
-    
+
     features['t0']=[1]
     for i,x in enumerate(_features):
         if not x==[]:
-            features['t0'].append(i+2)
+            features['t0'].append(i+3)
             for y in x:
-                features['t0'].append(y+2+args.segwidth)
+                features['t0'].append(y+3+args.segwidth)
     del _features
     _features1=eval(features['t1'])
-    # print(707,type(_features))
+
     features['t1']=[1]
     for i,x in enumerate(_features1):
 
         if not x==[]:
-            features['t1'].append(i+2)
+            features['t1'].append(i+3)
             for y in x:
-                features['t1'].append(y+2+args.segwidth)
+                features['t1'].append(y+3+args.segwidth)
     del _features1
     if len(features['t0'])>int(1.5*args.segwidth-1):
         features['t0']=features['t0'][:int(1.5*args.segwidth)-1]+[2]
