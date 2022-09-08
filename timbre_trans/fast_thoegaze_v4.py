@@ -52,6 +52,8 @@ parser.add_argument("--valid_nums", type=int, default=72055, help='')
 # parser.add_argument("--valid_nums", type=int, default=64, help='')
 parser.add_argument("--nfft", type=int, default=512, help='')
 parser.add_argument("--dmodel", type=int, default=512, help='')
+parser.add_argument("--layers", type=int, default=6, help='')
+parser.add_argument("--d_layers", type=int, default=6, help='')
 args = parser.parse_args()
 class MyConfig(T5Config):
     def __init__(self,
@@ -65,8 +67,8 @@ class MyConfig(T5Config):
         self.input_length = input_length
         super().__init__(
             **kwargs)
-config = MyConfig(vocab_size=91+args.segwidth, input_length=args.segwidth, use_position_embed=True, use_return_dict=None,use_dense=False, d_model=args.dmodel, d_kv=64, d_ff=1024, num_layers=8, num_decoder_layers=None, num_heads=8, relative_attention_num_buckets=32, dropout_rate=0.1,
-                  layer_norm_epsilon=1e-06, initializer_factor=1.0, feed_forward_proj='relu', is_encoder_decoder=True, use_cache=True,
+config = MyConfig(vocab_size=91+args.segwidth, input_length=args.segwidth, use_position_embed=True, return_dict=False,use_dense=False, d_model=args.dmodel, d_kv=64, d_ff=1024, num_layers=args.layers, num_decoder_layers=None, num_heads=8, relative_attention_num_buckets=32, dropout_rate=args.dropout,
+                  layer_norm_epsilon=1e-06, initializer_factor=1.0, feed_forward_proj='relu', is_encoder_decoder=True, use_cache=False,
                   bos_token_id=1,
                   pad_token_id=0, eos_token_id=2, decoder_start_token_id=1)
 
@@ -141,7 +143,7 @@ class LearnableAbsolutePositionEmbedding(nn.Module):
 class Thoegaze(nn.Module):
     def __init__(self,
         d_model=512, 
-        n_layers=8, 
+        d_layers=args.d_layers, 
         unet=False,
         use_transcription_loss=True
     ):
@@ -157,8 +159,8 @@ class Thoegaze(nn.Module):
         s_decoder_config = copy.deepcopy(config)
         s_decoder_config.is_decoder = True
         s_decoder_config.is_encoder_decoder = False   
-        s_decoder_config.input_length=int(args.seg_width*1.5) 
-        s_decoder_config.num_layers = n_layers
+        s_decoder_config.input_length=int(args.segwidth*1.5) 
+        s_decoder_config.num_layers = d_layers
         
 
         self.linear = nn.Linear(self.d_model, 91+args.segwidth)
@@ -213,12 +215,12 @@ class Thoegaze(nn.Module):
                 # if ss<ds:
                 mem_mask=torch.ones(bs,int(ss))
                 mem_mask=nn.functional.pad(mem_mask,(0,int(ss/2),0,0),'constant',value=0)  
-                mem_mask=torch.t(mem_mask)
+                # mem_mask=torch.t(mem_mask)
                 if use_gpu:
                     mem_mask=mem_mask.cuda()
                 _s=nn.functional.pad(_s,(0,0,0,int(ss/2),0,0),'constant',value=0)  
                 transcription_out.append(self.m(self.linear(self.s_decoder(input_ids=decoder_input,encoder_hidden_states=_s,encoder_attention_mask=mem_mask,use_cache=True
-                ))))
+                )[0])))
 
 
         # print(207,transcription_out[0].size())
@@ -585,12 +587,12 @@ def parse_fn(features):
         features['t0']=features['t0'][:int(1.5*args.segwidth)-1]+[2]
     else:
         features['t0'] += [2]#eos
-        features['t0'] += [0]*(int(1.5*args.segwidth)-len(features['t0'])-1)
+        features['t0'] += [0]*(int(1.5*args.segwidth)-len(features['t0']))
     if len(features['t1'])>int(1.5*args.segwidth-1):
         features['t1']=features['t1'][:int(1.5*args.segwidth)-1]+[2]
     else:
         features['t0'] += [2]#eos
-        features['t1'] += [0]*(int(1.5*args.segwidth)-len(features['t1'])-1)
+        features['t1'] += [0]*(int(1.5*args.segwidth)-len(features['t1']))
     
     features['t0']=torch.tensor(features['t0'])
     features['t1']=torch.tensor(features['t1'])
@@ -637,7 +639,7 @@ if __name__=="__main__":
     if args.comment:
         full_name = '%s_%s' % (full_name, args.comment)
 
-    model = Thoegaze(dropout=args.dropout,d_model=args.dmodel)
+    model = Thoegaze(d_model=args.dmodel)
 
     writer = SummaryWriter(comment=('double_trans' + full_name))
     if use_gpu:
