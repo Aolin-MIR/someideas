@@ -54,8 +54,9 @@ parser.add_argument("--nfft", type=int, default=512, help='')
 parser.add_argument("--dmodel", type=int, default=512, help='')
 parser.add_argument("--layers", type=int, default=6, help='')
 parser.add_argument("--d_layers", type=int, default=6, help='')
-parser.add_argument("--usetrans", type=bool, default=True, help='')
+parser.add_argument("--usetrans", type=int, default=1, help='')
 args = parser.parse_args()
+
 class MyConfig(T5Config):
     def __init__(self,
                  use_dense=False,
@@ -183,7 +184,8 @@ class Thoegaze(nn.Module):
 
         t=[]
         s=[]
-        decoder_inputs=[self._shift_right(di) for di in decoder_inputs]
+        if decoder_inputs:
+            decoder_inputs=[self._shift_right(di) for di in decoder_inputs]
         transcription_out=[]
         for i, x in enumerate(x_list):
 
@@ -259,7 +261,7 @@ class Thoegaze(nn.Module):
         return shifted_input_ids
 
 
-def criterion(outputs,inputs,score=None,alpha=0.5,beta=1,gamma=1,usetrans=True):
+def criterion(outputs,inputs,score=None,alpha=0.5,beta=1,gamma=1):
     
     if score:
         y1,y2,y3,y4,_s1,_s2,_s3,_s4=outputs
@@ -366,6 +368,7 @@ def note_f1_v3(outputs,sa,sb):
     return {'count':count,'tt':total_true,'tp':total_pred}
 
 def train(epoch):
+
     global global_step
 
     print("epoch %3d with lr=%.02e" % (epoch, get_lr()))
@@ -403,9 +406,11 @@ def train(epoch):
 
         # forward/backward
         if args.usetrans:
+
             outputs = model([x0,x1,x2,x3],[t0,t1])
             loss,loss_trans,loss_syth = criterion(outputs, [x0,x1,x2,x3],[t0,t1],alpha=args.alpha,beta=args.beta,gamma=args.gamma)
         else:
+
             outputs = model([x0,x1,x2,x3])
             loss = loss_syth = criterion(outputs, [x0,x1,x2,x3],None,alpha=args.alpha,beta=args.beta,gamma=args.gamma)
         optimizer.zero_grad()
@@ -416,10 +421,10 @@ def train(epoch):
         it += 1
         global_step += 1
         running_loss += loss.item()
-
-        running_loss_trans += loss_trans.item()
         if args.usetrans:
-            running_loss_syth += loss_syth.item()
+            running_loss_trans += loss_trans.item()
+
+        running_loss_syth += loss_syth.item()
  
         pbar.set_postfix({'epoch':str(epoch+1),
             'train_loss': "%.05f" % (running_loss / it),
@@ -436,7 +441,7 @@ def train(epoch):
         # print('本进程占用内存(MB)%.05f' % (bj))
     # accuracy = correct/total
     # epoch_loss = running_loss / it
-    print('epoch:',epoch+1,' done')
+    # print('epoch:',epoch+1,' done')
     # writer.add_scalar('%s/accuracy' % phase, 100*accuracy, epoch)
     # writer.add_scalar('%s/epoch_loss' % phase, epoch_loss, epoch)
 @torch.no_grad()
@@ -614,7 +619,9 @@ def parse_fn(features):
         # print(592,len(features['t1']))
         features['t0']=torch.tensor(features['t0'])
         features['t1']=torch.tensor(features['t1'])
-
+    else:
+        del features['t0']
+        del features['t1']
     return features
 
 
@@ -630,7 +637,7 @@ if __name__=="__main__":
 
 
     use_gpu = torch.cuda.is_available()
-    print('use_gpu', use_gpu)
+    print('use_gpu', use_gpu,'use_trans',args.usetrans)
     if use_gpu:
         torch.backends.cudnn.benchmark = True
     print('alpha',args.alpha,'beta',args.beta,'gamma',args.gamma)
