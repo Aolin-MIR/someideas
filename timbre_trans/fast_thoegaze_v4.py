@@ -54,6 +54,7 @@ parser.add_argument("--nfft", type=int, default=512, help='')
 parser.add_argument("--dmodel", type=int, default=512, help='')
 parser.add_argument("--layers", type=int, default=6, help='')
 parser.add_argument("--d_layers", type=int, default=6, help='')
+parser.add_argument("--usetrans", type=bool, default=True, help='')
 args = parser.parse_args()
 class MyConfig(T5Config):
     def __init__(self,
@@ -258,7 +259,7 @@ class Thoegaze(nn.Module):
         return shifted_input_ids
 
 
-def criterion(outputs,inputs,score=None,alpha=0.5,beta=1,gamma=1):
+def criterion(outputs,inputs,score=None,alpha=0.5,beta=1,gamma=1,usetrans=True):
     
     if score:
         y1,y2,y3,y4,_s1,_s2,_s3,_s4=outputs
@@ -285,7 +286,7 @@ def criterion(outputs,inputs,score=None,alpha=0.5,beta=1,gamma=1):
     if score:
         return beta*loss_syth+gamma*loss_transcription,loss_transcription,loss_syth
     else:
-        return  beta*loss_syth,loss_syth
+        return  loss_syth
 
 
 def note_f1_v3(outputs,sa,sb):
@@ -322,21 +323,21 @@ def note_f1_v3(outputs,sa,sb):
         for y in y_true:
             if y==2:
                 break
-            elif 3<=y<args.segwith+3:
+            elif 3<=y<args.segwidth+3:
                 segnum=y-3
-            elif y>=args.segwith+3:
+            elif y>=args.segwidth+3:
                 if segnum>=0:
-                    temp_t.append((segnum,y-args.segwith-3))
+                    temp_t.append((segnum,y-args.segwidth-3))
         temp_p=[]       
         segnum=-1
         for y in y_pred:
             if y==2:
                 break
-            elif 3<=y<args.segwith+3:
+            elif 3<=y<args.segwidth+3:
                 segnum=y-3
-            elif y>=args.segwith+3:
+            elif y>=args.segwidth+3:
                 if segnum>=0:
-                    temp_p.append((segnum,y-args.segwith-3))
+                    temp_p.append((segnum,y-args.segwidth-3))
 
         # temp_p = [((x)//88, (x) % 88)
         #         for x in temp_p ]
@@ -383,7 +384,9 @@ def train(epoch):
         if it==total_it:
             break
 
-        x0,x1,x2,x3,t0,t1=batch['x0'],batch['x1'],batch['x2'],batch['x3'],batch['t0'],batch['t1']
+        x0,x1,x2,x3=batch['x0'],batch['x1'],batch['x2'],batch['x3']
+        if args.usetrans:
+            t0,t1=batch['t0'],batch['t1']
         del batch
 
         if use_gpu:
@@ -391,16 +394,20 @@ def train(epoch):
             x1 = x1.cuda()
             x2 = x2.cuda()
             x3 = x3.cuda()
-            t0 = t0.cuda()
-            t1 = t1.cuda()
+            if args.usetrans:
+                t0 = t0.cuda()
+                t1 = t1.cuda()
 
 
 
 
         # forward/backward
-        outputs = model([x0,x1,x2,x3],[t0,t1])
-        
-        loss,loss_trans,loss_syth = criterion(outputs, [x0,x1,x2,x3],[t0,t1],alpha=args.alpha,beta=args.beta,gamma=args.gamma)
+        if args.usetrans:
+            outputs = model([x0,x1,x2,x3],[t0,t1])
+            loss,loss_trans,loss_syth = criterion(outputs, [x0,x1,x2,x3],[t0,t1],alpha=args.alpha,beta=args.beta,gamma=args.gamma)
+        else:
+            outputs = model([x0,x1,x2,x3])
+            loss = loss_syth = criterion(outputs, [x0,x1,x2,x3],None,alpha=args.alpha,beta=args.beta,gamma=args.gamma)
         optimizer.zero_grad()
         loss.backward()
         optimizer.step()
@@ -411,7 +418,8 @@ def train(epoch):
         running_loss += loss.item()
 
         running_loss_trans += loss_trans.item()
-        running_loss_syth += loss_syth.item()
+        if args.usetrans:
+            running_loss_syth += loss_syth.item()
  
         pbar.set_postfix({'epoch':str(epoch+1),
             'train_loss': "%.05f" % (running_loss / it),
@@ -442,6 +450,7 @@ def valid(epoch):
     count,tt,tp=0,0,0
     best_f1=0.0
     it = 0
+    nf1=-1
     total_it=args.valid_nums//valid_dataloader.batch_size
     # correct = 0
     # total = 0
@@ -456,36 +465,46 @@ def valid(epoch):
     for batch in pbar:
         if it==total_it:
             break
+        x0,x1,x2,x3=batch['x0'],batch['x1'],batch['x2'],batch['x3']
+        if args.usetrans:
+            t0,t1=batch['t0'],batch['t1']
+        del batch
 
-        x0,x1,x2,x3,t0,t1=batch['x0'],batch['x1'],batch['x2'],batch['x3'],batch['t0'],batch['t1']
         if use_gpu:
             x0 = x0.cuda()
             x1 = x1.cuda()
             x2 = x2.cuda()
             x3 = x3.cuda()
-            t0 = t0.cuda()
-            t1 = t1.cuda()
+            if args.usetrans:
+                t0 = t0.cuda()
+                t1 = t1.cuda()
+
         del batch
         # forward/backward
-        outputs = model([x0,x1,x2,x3],[t0,t1])     
-        loss,loss_trans,loss_syth  = criterion(outputs, [x0,x1,x2,x3],[t0,t1],alpha=args.alpha,beta=args.beta,gamma=args.gamma)
+        if args.usetrans:
+            outputs = model([x0,x1,x2,x3],[t0,t1])
+            loss,loss_trans,loss_syth = criterion(outputs, [x0,x1,x2,x3],[t0,t1],alpha=args.alpha,beta=args.beta,gamma=args.gamma)
+        else:
+            outputs = model([x0,x1,x2,x3])
+            loss = loss_syth = criterion(outputs, [x0,x1,x2,x3],None,alpha=args.alpha,beta=args.beta,gamma=args.gamma)
         #加速noteF1的计算
-        metric=note_f1_v3(outputs,t0,t1)
-        # statistics
-        it += 1
-        global_step += 1
-        running_loss += loss.item()
-        # running_loss_s += loss_s
-        # running_loss_t += loss_t
-        running_loss_trans += loss_trans.item()
-        running_loss_syth += loss_syth.item()
-        count+=metric['count']
-        tt+=metric['tt']
-        tp+=metric['tp']
-        r = count/(tt+epsilon)
-        p = count/(tp+epsilon)
+        if args.usetrans:
+            metric=note_f1_v3(outputs,t0,t1)
+            # statistics
+            it += 1
+            global_step += 1
+            running_loss += loss.item()
+            # running_loss_s += loss_s
+            # running_loss_t += loss_t
+            running_loss_trans += loss_trans.item()
+            running_loss_syth += loss_syth.item()
+            count+=metric['count']
+            tt+=metric['tt']
+            tp+=metric['tp']
+            r = count/(tt+epsilon)
+            p = count/(tp+epsilon)
 
-        nf1 = 2 * (p*r) / (r + p + epsilon)
+            nf1 = 2 * (p*r) / (r + p + epsilon)
 
         # mem = psutil.virtual_memory()
         # # 系统总计内存
@@ -527,9 +546,10 @@ def valid(epoch):
         'f1': nf1,
         'optimizer' : optimizer.state_dict(),
     }
+    if args.usetrans:
 
-    if  nf1> best_f1:
-        best_f1 = nf1
+        if  nf1> best_f1:
+            best_f1 = nf1
     #     torch.save(checkpoint, 'checkpoints/best-loss-speech-commands-checkpoint-%s.pth' % full_name)
     #     torch.save(model, '%d-%s-best-loss.pth' % (start_timestamp, full_name))
     # print(498,epoch_loss,type(epoch_loss),best_loss,type(best_loss))
@@ -560,39 +580,40 @@ def parse_fn(features):
     # if features['inputs_embeds'].shape[-1] not in [512, nbins]:
     #     print(features['inputs_embeds'].shape, features['labels'])
     #     assert 1==2
-    _features=eval(features['t0'])
+    if args.usetrans:
+        _features=eval(features['t0'])
 
-    features['t0']=[1]
-    for i,x in enumerate(_features):
-        if not x==[]:
-            features['t0'].append(i+3)
-            for y in x:
-                features['t0'].append(y+3+args.segwidth)
-    del _features
-    _features1=eval(features['t1'])
+        features['t0']=[1]
+        for i,x in enumerate(_features):
+            if not x==[]:
+                features['t0'].append(i+3)
+                for y in x:
+                    features['t0'].append(y+3+args.segwidth)
+        del _features
+        _features1=eval(features['t1'])
 
-    features['t1']=[1]
-    for i,x in enumerate(_features1):
+        features['t1']=[1]
+        for i,x in enumerate(_features1):
 
-        if not x==[]:
-            features['t1'].append(i+3)
-            for y in x:
-                features['t1'].append(y+3+args.segwidth)
-    del _features1
-    if len(features['t0'])>int(1.5*args.segwidth-1):
-        features['t0']=features['t0'][:int(1.5*args.segwidth)-1]+[2]
-    else:
-        features['t0'] += [2]#eos
-        features['t0'] += [0]*(int(1.5*args.segwidth)-len(features['t0']))
-        
-    if len(features['t1'])>int(1.5*args.segwidth-1):
-        features['t1']=features['t1'][:int(1.5*args.segwidth)-1]+[2]
-    else:
-        features['t1'] += [2]#eos
-        features['t1'] += [0]*(int(1.5*args.segwidth)-len(features['t1']))
-    # print(592,len(features['t1']))
-    features['t0']=torch.tensor(features['t0'])
-    features['t1']=torch.tensor(features['t1'])
+            if not x==[]:
+                features['t1'].append(i+3)
+                for y in x:
+                    features['t1'].append(y+3+args.segwidth)
+        del _features1
+        if len(features['t0'])>int(1.5*args.segwidth-1):
+            features['t0']=features['t0'][:int(1.5*args.segwidth)-1]+[2]
+        else:
+            features['t0'] += [2]#eos
+            features['t0'] += [0]*(int(1.5*args.segwidth)-len(features['t0']))
+
+        if len(features['t1'])>int(1.5*args.segwidth-1):
+            features['t1']=features['t1'][:int(1.5*args.segwidth)-1]+[2]
+        else:
+            features['t1'] += [2]#eos
+            features['t1'] += [0]*(int(1.5*args.segwidth)-len(features['t1']))
+        # print(592,len(features['t1']))
+        features['t0']=torch.tensor(features['t0'])
+        features['t1']=torch.tensor(features['t1'])
 
     return features
 
@@ -636,7 +657,7 @@ if __name__=="__main__":
     if args.comment:
         full_name = '%s_%s' % (full_name, args.comment)
 
-    model = Thoegaze(d_model=args.dmodel)
+    model = Thoegaze(d_model=args.dmodel,use_transcription_loss=args.usetrans)
 
     writer = SummaryWriter(comment=('double_trans' + full_name))
     if use_gpu:
@@ -697,3 +718,4 @@ if __name__=="__main__":
         time_str = 'total time elapsed: {:.0f}h {:.0f}m {:.0f}s '.format(time_elapsed // 3600, time_elapsed % 3600 // 60, time_elapsed % 60)
         print("%s, best loss %f" % (time_str, best_loss))
     print("finished")
+
