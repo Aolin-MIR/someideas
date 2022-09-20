@@ -484,7 +484,7 @@ def valid(epoch):
                 t0 = t0.cuda()
                 t1 = t1.cuda()
 
-        del batch
+
         # forward/backward
         if args.usetrans:
             outputs = model([x0,x1,x2,x3],[t0,t1])
@@ -492,17 +492,19 @@ def valid(epoch):
         else:
             outputs = model([x0,x1,x2,x3])
             loss = loss_syth = criterion(outputs, [x0,x1,x2,x3],None,alpha=args.alpha,beta=args.beta,gamma=args.gamma)
-        #加速noteF1的计算
+        it += 1
+        global_step += 1
+        running_loss += loss.item()
+        # running_loss_s += loss_s
+        # running_loss_t += loss_t
+        
+        running_loss_syth += loss_syth.item()
+    #加速noteF1的计算
         if args.usetrans:
+            running_loss_trans += loss_trans.item()
             metric=note_f1_v3(outputs,t0,t1)
             # statistics
-            it += 1
-            global_step += 1
-            running_loss += loss.item()
-            # running_loss_s += loss_s
-            # running_loss_t += loss_t
-            running_loss_trans += loss_trans.item()
-            running_loss_syth += loss_syth.item()
+
             count+=metric['count']
             tt+=metric['tt']
             tp+=metric['tp']
