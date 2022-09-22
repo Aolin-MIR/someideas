@@ -177,10 +177,6 @@ class Thoegaze(nn.Module):
         self.s_decoder= T5Stack(s_decoder_config,embed_tokens=self.tgt_emb)
 
     def forward(self, x_list,decoder_inputs=None, state=None):
-        """
-
-        """
-
 
         t=[]
         s=[]
@@ -236,9 +232,9 @@ class Thoegaze(nn.Module):
         y3=self.out(y3)
 
         if self.use_transcription_loss:
-            return [y0,y1,y2,y3]+transcription_out
+            return [y0,y1,y2,y3]+transcription_out+t
         else:
-            return [y0,y1,y2,y3] # required to return a state
+            return [y0,y1,y2,y3]+t # required to return a state
 
     def _shift_right(self, input_ids):
         decoder_start_token_id = 1
@@ -264,7 +260,7 @@ class Thoegaze(nn.Module):
 def criterion(outputs,inputs,score=None,alpha=0.5,beta=1,gamma=1):
     
     if score:
-        y1,y2,y3,y4,_s1,_s2,_s3,_s4=outputs
+        y1,y2,y3,y4,_s1,_s2,_s3,_s4,t1,t2,t3,t4=outputs
         sa,sb=score
         if use_gpu:
             sa = sa.cuda().long()
@@ -283,12 +279,12 @@ def criterion(outputs,inputs,score=None,alpha=0.5,beta=1,gamma=1):
     x1,x2,x3,x4=inputs
     fn=torch.nn.MSELoss()
     # loss_s=fn(s1,s3)+fn(s2,s4) 
-    # loss_t=fn(t1,t2)+fn(t3,t4)
+    loss_t=fn(t1,t2)+fn(t3,t4)
     loss_syth=fn(x1,y1)+fn(x2,y2)+fn(x3,y3)+fn(x4,y4)
     if score:
-        return beta*loss_syth+gamma*loss_transcription,loss_transcription,loss_syth
+        return alpha*loss_t,beta*loss_syth+gamma*loss_transcription,loss_transcription,loss_syth,loss_t
     else:
-        return  loss_syth
+        return  alpha*loss_t+beta,loss_syth,loss_t
 
 
 def note_f1_v3(outputs,sa,sb):
@@ -408,11 +404,11 @@ def train(epoch):
         if args.usetrans:
 
             outputs = model([x0,x1,x2,x3],[t0,t1])
-            loss,loss_trans,loss_syth = criterion(outputs, [x0,x1,x2,x3],[t0,t1],alpha=args.alpha,beta=args.beta,gamma=args.gamma)
+            loss,loss_trans,loss_syth ,loss_t= criterion(outputs, [x0,x1,x2,x3],[t0,t1],alpha=args.alpha,beta=args.beta,gamma=args.gamma)
         else:
 
             outputs = model([x0,x1,x2,x3])
-            loss = loss_syth = criterion(outputs, [x0,x1,x2,x3],None,alpha=args.alpha,beta=args.beta,gamma=args.gamma)
+            loss , loss_syth ,loss_t= criterion(outputs, [x0,x1,x2,x3],None,alpha=args.alpha,beta=args.beta,gamma=args.gamma)
         optimizer.zero_grad()
         loss.backward()
         optimizer.step()
@@ -421,6 +417,7 @@ def train(epoch):
         it += 1
         global_step += 1
         running_loss += loss.item()
+        running_loss_t += loss_t.item()
         if args.usetrans:
             running_loss_trans += loss_trans.item()
 
@@ -429,7 +426,7 @@ def train(epoch):
         pbar.set_postfix({'epoch':str(epoch+1),
             'train_loss': "%.05f" % (running_loss / it),
             # 'loss_s': "%.05f" % (running_loss_s / it),
-            # 'loss_t': "%.05f" % (running_loss_t / it),
+            'loss_t': "%.05f" % (running_loss_t / it),
             'loss_trans': "%.05f" % (running_loss_trans / it),
             'loss_syth': "%.05f" % (running_loss_syth / it),
                         # '系统总计内存':"%.05f" % zj,
@@ -488,15 +485,15 @@ def valid(epoch):
         # forward/backward
         if args.usetrans:
             outputs = model([x0,x1,x2,x3],[t0,t1])
-            loss,loss_trans,loss_syth = criterion(outputs, [x0,x1,x2,x3],[t0,t1],alpha=args.alpha,beta=args.beta,gamma=args.gamma)
+            loss,loss_trans,loss_syth,loss_t = criterion(outputs, [x0,x1,x2,x3],[t0,t1],alpha=args.alpha,beta=args.beta,gamma=args.gamma)
         else:
             outputs = model([x0,x1,x2,x3])
-            loss = loss_syth = criterion(outputs, [x0,x1,x2,x3],None,alpha=args.alpha,beta=args.beta,gamma=args.gamma)
+            loss,loss_syth,loss_t = criterion(outputs, [x0,x1,x2,x3],None,alpha=args.alpha,beta=args.beta,gamma=args.gamma)
         it += 1
         global_step += 1
         running_loss += loss.item()
         # running_loss_s += loss_s
-        # running_loss_t += loss_t
+        running_loss_t += loss_t.item()
         
         running_loss_syth += loss_syth.item()
     #加速noteF1的计算
@@ -529,7 +526,7 @@ def valid(epoch):
         pbar.set_postfix({
             'valid_loss': "%.05f" % (running_loss / it),
             # 'loss_s': "%.05f" % (running_loss_s / it),
-            # 'loss_t': "%.05f" % (running_loss_t / it),
+            'loss_t': "%.05f" % (running_loss_t / it),
             'loss_trans': "%.05f" % (running_loss_trans / it),
             'loss_syth': "%.05f" % (running_loss_syth / it),
             'note_f1':"%.05f" % (nf1),
