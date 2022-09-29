@@ -56,6 +56,7 @@ parser.add_argument("--layers", type=int, default=6, help='')
 parser.add_argument("--d_layers", type=int, default=6, help='')
 parser.add_argument("--usetrans", type=int, default=1, help='')
 parser.add_argument("--usemaxpool", type=int, default=1, help='')
+parser.add_argument("--nocross", type=int, default=1, help='')
 args = parser.parse_args()
 
 class MyConfig(T5Config):
@@ -168,7 +169,7 @@ class Thoegaze(nn.Module):
         s_decoder_config.num_layers = d_layers
         self.use_max_pooling=use_max_pooling
         if self.use_max_pooling:
-           self.max_pool=nn.Maxpool2d((args.segwidth,1)) 
+           self.max_pool=nn.MaxPool2d((args.segwidth,1)) 
 
         self.linear = nn.Linear(self.d_model, 91+args.segwidth)
         # self.m = nn.Softmax(dim=-1)
@@ -199,8 +200,8 @@ class Thoegaze(nn.Module):
                 _t=self.max_pool(_t)
             else:
                 _t=torch.mean(_t,1)
-            _t=torch.unsqueeze(
-                _t,1)
+                _t=torch.squeeze(
+                    _t,1)
 
             t.append(_t)
             s.append(_s)
@@ -228,11 +229,16 @@ class Thoegaze(nn.Module):
                 )[0]))
 
 
-
-        y0= self.decoder(inputs_embeds=s[2]+t[1])[0]
-        y1= self.decoder(inputs_embeds=s[3]+t[0])[0]
-        y2= self.decoder(inputs_embeds=s[0]+t[3])[0]
-        y3= self.decoder(inputs_embeds=s[1]+t[2])[0]
+        if args.nocross:
+            y0= self.decoder(inputs_embeds=s[0]+t[1])[0]
+            y1= self.decoder(inputs_embeds=s[1]+t[0])[0]
+            y2= self.decoder(inputs_embeds=s[2]+t[3])[0]
+            y3= self.decoder(inputs_embeds=s[3]+t[2])[0]
+        else:
+            y0= self.decoder(inputs_embeds=s[2]+t[1])[0]
+            y1= self.decoder(inputs_embeds=s[3]+t[0])[0]
+            y2= self.decoder(inputs_embeds=s[0]+t[3])[0]
+            y3= self.decoder(inputs_embeds=s[1]+t[2])[0]
 
         y0=self.out(y0)
         y1=self.out(y1)
@@ -287,12 +293,12 @@ def criterion(outputs,inputs,score=None,alpha=0.5,beta=1,gamma=1):
     x1,x2,x3,x4=inputs
     fn=torch.nn.MSELoss()
     # loss_s=fn(s1,s3)+fn(s2,s4) 
-    loss_t=fn(t1,t2)+fn(t3,t4)
+    loss_t=0#fn(t1,t2)+fn(t3,t4)
     loss_syth=fn(x1,y1)+fn(x2,y2)+fn(x3,y3)+fn(x4,y4)
     if score:
-        return alpha*loss_t,beta*loss_syth+gamma*loss_transcription,loss_transcription,loss_syth,loss_t
+        return beta*loss_syth+gamma*loss_transcription,loss_transcription,loss_syth,loss_t
     else:
-        return  alpha*loss_t+beta,loss_syth,loss_t
+        return  beta*loss_syth,loss_syth,loss_t
 
 
 def note_f1_v3(outputs,sa,sb):
@@ -430,13 +436,13 @@ def train(epoch):
             running_loss_trans += loss_trans.item()
 
         running_loss_syth += loss_syth.item()
- 
-        pbar.set_postfix({'epoch':str(epoch+1),
-            'train_loss': "%.05f" % (running_loss / it),
-            # 'loss_s': "%.05f" % (running_loss_s / it),
-            'loss_t': "%.05f" % (running_loss_t / it),
-            'loss_trans': "%.05f" % (running_loss_trans / it),
-            'loss_syth': "%.05f" % (running_loss_syth / it),
+        if it%1000==0:
+            pbar.set_postfix({'epoch':str(epoch+1),
+                'train_loss': "%.05f" % (running_loss / it),
+                # 'loss_s': "%.05f" % (running_loss_s / it),
+                'loss_t': "%.05f" % (running_loss_t / it),
+                'loss_trans': "%.05f" % (running_loss_trans / it),
+                'loss_syth': "%.05f" % (running_loss_syth / it),
                         # '系统总计内存':"%.05f" % zj,
     #    '系统已经使用内存':"%.05f" % ysy,
     #     '系统空闲内存':"%.05f" % kx,
@@ -531,13 +537,14 @@ def valid(epoch):
         # print('系统已经使用内存:%d.3GB' % ysy)
         # print('系统空闲内存:%d.3GB' % kx)
         # update the progress bar
-        pbar.set_postfix({
-            'valid_loss': "%.05f" % (running_loss / it),
-            # 'loss_s': "%.05f" % (running_loss_s / it),
-            'loss_t': "%.05f" % (running_loss_t / it),
-            'loss_trans': "%.05f" % (running_loss_trans / it),
-            'loss_syth': "%.05f" % (running_loss_syth / it),
-            'note_f1':"%.05f" % (nf1),
+        if it%300==0:
+            pbar.set_postfix({
+                'valid_loss': "%.05f" % (running_loss / it),
+                # 'loss_s': "%.05f" % (running_loss_s / it),
+                'loss_t': "%.05f" % (running_loss_t / it),
+                'loss_trans': "%.05f" % (running_loss_trans / it),
+                'loss_syth': "%.05f" % (running_loss_syth / it),
+                'note_f1':"%.05f" % (nf1),
             # '系统总计内存':"%.05f" % zj,
     #    '系统已经使用内存':"%.05f" % ysy,
     #     '系统空闲内存':"%.05f" % kx,
