@@ -168,7 +168,7 @@ def tokenize(midfile=None, audio=None,method='cqt',return_target=True,delete_wav
         frames = librosa.cqt(frames, sr=sample_rate,
                          hop_length=hop_width, fmin=27.50, n_bins=nbins, bins_per_octave=36)
     elif method == 'stft':
-        frames = librosa.stft(y=frames,n_fft=nfft, hop_length=hop_width)
+        frames = librosa.stft(y=frames,n_fft=nfft, hop_length=hop_width,win_length=hop_width)
     elif method == 'melspec':
         frames = librosa.feature.melspectrogram(y=frames, sr=sample_rate, n_fft=256, hop_length=256,n_mels=128)
     frames = np.abs(frames)
