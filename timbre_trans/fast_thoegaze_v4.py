@@ -39,7 +39,7 @@ parser.add_argument("--lr-scheduler", choices=['plateau', 'step'], default='plat
 parser.add_argument("--lr-scheduler-patience", type=int, default=5, help='lr scheduler plateau: Number of epochs with no improvement after which learning rate will be reduced')
 parser.add_argument("--lr-scheduler-step-size", type=int, default=50, help='lr scheduler step: number of epochs of learning rate decay.')
 parser.add_argument("--lr-scheduler-gamma", type=float, default=0.1, help='learning rate is multiplied by the gamma to decrease it')
-parser.add_argument("--max-epochs", type=int, default=30, help='max number of epochs')
+parser.add_argument("--max-epochs", type=int, default=60, help='max number of epochs')
 parser.add_argument("--resume", type=str, help='checkpoint file to resume')
 parser.add_argument("--segwidth", type=int, default=64, help='')
 parser.add_argument("--dropout", type=float, default=0.1, help='dropout rate')
@@ -55,6 +55,7 @@ parser.add_argument("--dmodel", type=int, default=512, help='')
 parser.add_argument("--layers", type=int, default=6, help='')
 parser.add_argument("--d_layers", type=int, default=6, help='')
 parser.add_argument("--usetrans", type=int, default=1, help='')
+parser.add_argument("--usemaxpool", type=int, default=1, help='')
 args = parser.parse_args()
 
 class MyConfig(T5Config):
@@ -148,7 +149,8 @@ class Thoegaze(nn.Module):
         d_model=512, 
         d_layers=args.d_layers, 
         unet=False,
-        use_transcription_loss=True
+        use_transcription_loss=True,
+        use_max_pooling=False
     ):
         super().__init__()
         self.d_model  = d_model
@@ -164,7 +166,9 @@ class Thoegaze(nn.Module):
         s_decoder_config.is_encoder_decoder = False   
         s_decoder_config.input_length=int(args.segwidth*1.5) 
         s_decoder_config.num_layers = d_layers
-        
+        self.use_max_pooling=use_max_pooling
+        if self.use_max_pooling:
+           self.max_pool=nn.Maxpool2d((args.segwidth,1)) 
 
         self.linear = nn.Linear(self.d_model, 91+args.segwidth)
         # self.m = nn.Softmax(dim=-1)
@@ -191,8 +195,12 @@ class Thoegaze(nn.Module):
             # x=self.relu(x)
             _s= self.s_encoder(inputs_embeds=x)[0]
             _t = self.t_encoder(inputs_embeds=x)[0]
-
-            _t=torch.unsqueeze(torch.mean(_t,1),1)
+            if self.use_max_pooling:
+                _t=self.max_pool(_t)
+            else:
+                _t=torch.mean(_t,1)
+            _t=torch.unsqueeze(
+                _t,1)
 
             t.append(_t)
             s.append(_s)
@@ -274,7 +282,7 @@ def criterion(outputs,inputs,score=None,alpha=0.5,beta=1,gamma=1):
         loss_transcription = sfn(torch.transpose(_s1, -2, -1),sa) + sfn(torch.transpose(_s3, -2, -1),sa) +sfn(torch.transpose(_s2, -2, -1),sb)+ sfn(torch.transpose(_s4, -2, -1),sb)
 
     else:
-        y1,y2,y3,y4=outputs
+        y1,y2,y3,y4,t1,t2,t3,t4=outputs
 
     x1,x2,x3,x4=inputs
     fn=torch.nn.MSELoss()
@@ -623,6 +631,8 @@ def parse_fn(features):
         del features['t1']
     return features
 
+# def predict(content,timbre):
+    
 
 
 
@@ -663,7 +673,7 @@ if __name__=="__main__":
     if args.comment:
         full_name = '%s_%s' % (full_name, args.comment)
 
-    model = Thoegaze(d_model=args.dmodel,use_transcription_loss=args.usetrans)
+    model = Thoegaze(d_model=args.dmodel,use_transcription_loss=args.usetrans,use_max_pooling=args.usemaxpool)
 
     writer = SummaryWriter(comment=('double_trans' + full_name))
     if use_gpu:
