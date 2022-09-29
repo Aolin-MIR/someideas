@@ -431,7 +431,7 @@ def train(epoch):
         it += 1
         global_step += 1
         running_loss += loss.item()
-        running_loss_t += loss_t.item()
+        # running_loss_t += loss_t.item()
         if args.usetrans:
             running_loss_trans += loss_trans.item()
 
@@ -507,7 +507,7 @@ def valid(epoch):
         global_step += 1
         running_loss += loss.item()
         # running_loss_s += loss_s
-        running_loss_t += loss_t.item()
+        # running_loss_t += loss_t.item()
         
         running_loss_syth += loss_syth.item()
     #加速noteF1的计算
