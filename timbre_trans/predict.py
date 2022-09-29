@@ -6,11 +6,11 @@ from einops import rearrange
 import torch
 import copy
 from mae_torch_preprocess import tokenize
-
+import scipy.signal as signal
 import argparse
 import time
 import torch.nn as nn
-
+import librosa
 from tqdm.auto import tqdm
 from tensorboardX import SummaryWriter
 from torch.utils.data import DataLoader
@@ -240,8 +240,60 @@ class Thoegaze(nn.Module):
         return shifted_input_ids
 
 
+sr = 25600 # Sample rate.
+n_fft = args.nfft # fft points (samples)
+frame_shift = int(sr/32) # seconds
+frame_length = int(sr/32) # seconds
+hop_length = int(sr*frame_shift) # samples.
+win_length = n_fft # int(sr*frame_length) # samples.
+# n_mels = 80 # Number of Mel banks to generate
+power = 1.2 # Exponent for amplifying the predicted magnitude
+n_iter = 100 # Number of inversion iterations
+preemphasis = .97 # or None
+max_db = 100
+ref_db = 20
+top_db = 15
 
+def spectrogram2wav(mag):
+    '''# Generate wave file from spectrogram'''
+    # transpose
+    mag = mag.T
 
+    # de-noramlize
+    mag = (np.clip(mag, 0, 1) * max_db) - max_db + ref_db
+
+    # to amplitude
+    mag = np.power(10.0, mag * 0.05)
+
+    # wav reconstruction
+    wav = griffin_lim(mag)
+
+    # de-preemphasis
+    wav = signal.lfilter([1], [1, -preemphasis], wav)
+
+    # c
+    wav, _ = librosa.effects.trim(wav)
+
+    return wav.astype(np.float32)
+def griffin_lim(spectrogram):
+    '''Applies Griffin-Lim's raw.
+    '''
+    X_best = copy.deepcopy(spectrogram)
+    for i in range(n_iter):
+        X_t = invert_spectrogram(X_best)
+        est = librosa.stft(X_t, n_fft, hop_length, win_length=win_length)
+        phase = est / np.maximum(1e-8, np.abs(est))
+        X_best = spectrogram * phase
+    X_t = invert_spectrogram(X_best)
+    y = np.real(X_t)
+
+    return y
+
+def invert_spectrogram(spectrogram):
+    '''
+    spectrogram: [f, t]
+    '''
+    return librosa.istft(spectrogram, hop_length, win_length=win_length, window="hann")
 
 
 @torch.no_grad()
@@ -289,8 +341,10 @@ def predict(content,timbre):
     
     spec=spec[:-cpl,:]
     #2wav
-    
 
+    wav = spectrogram2wav(spec)
+    # librosa.output.write_wav("gg_stft.wav", wav, sr)
+    librosa.output.write_wav("test.wav", wav, sr)
 
 
 
