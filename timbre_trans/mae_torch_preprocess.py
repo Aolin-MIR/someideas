@@ -3,20 +3,15 @@ import librosa
 import os
 import numpy as np
 from scipy.fftpack.basic import fft
-# import tensorflow as tf
-# import note_seq
+
 import dataclasses
-# import event_codec
-# import note_sequences
-# import vocabularies
+
 import math
 from mid2target import mid2target
 from tqdm import tqdm
 import tfrecord
 from torch.utils.data import Dataset
-# import seqio
-# from mt3 import event_codec, run_length_encoding, note_sequences, vocabularies
-# from mt3.vocabularies import build_codec
+
 import random
 #token id = time*88+note-21+1 eos=0
 from sf2utils.sf2parse import Sf2File # pip install sf2utils
@@ -32,6 +27,8 @@ parser.add_argument("--samplerate", type=int, default=25600, help='')
 parser.add_argument("--nfft", type=int, default=2048, help='')
 parser.add_argument("--delete_wav", type=int, default=1, help='')
 parser.add_argument("--segwidth", type=int, default=256, help='')
+parser.add_argument("--train_nums", type=int, default=200000, help='')
+parser.add_argument("--valid_nums", type=int, default=20000, help='')
 parser.add_argument("--traindatasets", type=str, default='/common-data/liaolin/traindatasets', help='')
 parser.add_argument("--validdatasets", type=str, default='/common-data/liaolin/validdatasets', help='')
 parser.add_argument("--maestropath", type=str, default='/common-data/liaolin/maestro-v3.0.0/', help='')
@@ -88,10 +85,8 @@ instruments = {
     'trumpet':('Nice-Strings-PlusOrchestra-v1.6.sf2','Trumpet 2'),
     'flute':('Expressive Flute SSO-v1.2.sf2',''),
     'mandolin':('Chris Mandolin-4U-v3.0.sf2','Full Exp Mandolin'),
-
-
-
 }
+
 def midi2wav(file, outpath, cfg):
     # print(71,cfg)
     cmds = [
@@ -157,7 +152,7 @@ def load_audio(audio):
 
 
 
-def tokenize(midfile, audio,method='cqt',return_target=True):
+def tokenize(midfile=None, audio=None,method='cqt',return_target=True,delete_wav=args.delete_wav,sample_rate=sample_rate,hop_width=hop_width,nfft=args.nfft,seg_width=seg_width,return_padding_length=False):
 
     # note_sequences.validate_note_sequence(ns)
     samples = load_audio(audio)
@@ -173,14 +168,15 @@ def tokenize(midfile, audio,method='cqt',return_target=True):
         frames = librosa.cqt(frames, sr=sample_rate,
                          hop_length=hop_width, fmin=27.50, n_bins=nbins, bins_per_octave=36)
     elif method == 'stft':
-        frames = librosa.stft(y=frames,n_fft=args.nfft, hop_length=hop_width)
+        frames = librosa.stft(y=frames,n_fft=nfft, hop_length=hop_width)
     elif method == 'melspec':
         frames = librosa.feature.melspectrogram(y=frames, sr=sample_rate, n_fft=256, hop_length=256,n_mels=128)
     frames = np.abs(frames)
     frames = np.transpose(frames)
     temp, nbins = frames.shape
     # print("nbins",nbins)
-    frames = np.pad(frames, ((0, seg_width-temp % seg_width), (0, 0)))
+    padding_length=seg_width-temp%seg_width
+    frames = np.pad(frames, ((0, padding_length), (0, 0)))
     # print(191,frames.shape)
     # if onsets_only:
     #   times, values = note_sequence_to_onsets(ns)
@@ -189,7 +185,7 @@ def tokenize(midfile, audio,method='cqt',return_target=True):
     #   times, values = (note_sequence_to_onsets_and_offsets_and_programs(ns))
 
     audio_split = np.reshape(frames, [-1, seg_width, nbins])
-    if args.delete_wav:
+    if delete_wav:
         print('delete',audio)
         os.remove(audio)
     if return_target:
@@ -199,7 +195,10 @@ def tokenize(midfile, audio,method='cqt',return_target=True):
 
         return targets, audio_split, segs_num
     else:
-        return  audio_split
+        if return_padding_length:
+            return  audio_split,padding_length
+        else:
+            return audio_split
 
 
 def dump_targets(midfile, segs_num):
@@ -281,7 +280,7 @@ def make_datasets(path, output_file,tag='train',nums=None,render=True):
                     t1, s1 ,s3 = z1[j]
                     # print(246,t0,t1)
                     writer.write({
-                        'x0': (s0.reshape([-1]).tobytes(), 'byte'),
+                        'x0': (s0.reshape([-1]).tobytes(), 'byte'), 
                         'x1': (s1.reshape([-1]).tobytes(), 'byte'),
                         'x2': (s2.reshape([-1]).tobytes(), 'byte'),
                         'x3': (s3.reshape([-1]).tobytes(), 'byte'),
@@ -324,24 +323,14 @@ if __name__ == "__main__":
     #                     renderMidi( os.path.join(home, filename), select_midi_soundfont(*instruments[instrument]),instrument) 
                 
 
-
-
-
-
-
-
-
-
-
-
     # stage2 make tfrecord dataset, need to do it for twice, one for training ,one for evaluating, maestrov3 except 2018 is used as traindata,2018 for valid. so you need to edit the hierarchy of folders of maestrov3
 
     output_file =args.traindatasets+'.tfrecord'
-    cout = make_datasets(path, output_file,tag='train',nums=80000)
+    cout = make_datasets(path, output_file,tag='train',nums=args.train_nums)
 
     print("train_cout", cout)
     # 0805:train：429405 valid:72055
     output_file =args.validdatasets+'.tfrecord'
-    cout = make_datasets(path, output_file,tag='valid',nums=10000)
+    cout = make_datasets(path, output_file,tag='valid',nums=args.valid_nums)
 
     print("valid_cout", cout)
