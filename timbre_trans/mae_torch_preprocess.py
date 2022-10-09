@@ -32,6 +32,7 @@ parser.add_argument("--valid_nums", type=int, default=20000, help='')
 parser.add_argument("--traindatasets", type=str, default='/common-data/liaolin/traindatasets', help='')
 parser.add_argument("--validdatasets", type=str, default='/common-data/liaolin/validdatasets', help='')
 parser.add_argument("--maestropath", type=str, default='/common-data/liaolin/maestro-v3.0.0/', help='')
+parser.add_argument("--method", type=str, default='melspec', help='')
 args = parser.parse_args()
 
 sample_rate = args.samplerate
@@ -170,7 +171,7 @@ def tokenize(midfile=None, audio=None,method='cqt',return_target=True,delete_wav
     elif method == 'stft':
         frames = librosa.stft(y=frames,n_fft=nfft, hop_length=hop_width,win_length=hop_width)
     elif method == 'melspec':
-        frames = librosa.feature.melspectrogram(y=frames, sr=sample_rate, n_fft=256, hop_length=256,n_mels=128)
+        frames = librosa.feature.melspectrogram(y=frames, sr=sample_rate, n_fft=2048, hop_length=hop_width,n_mels=229, fmin=30, fmax=8000)# librosa.feature.melspectrogram(audio, sr=16000, n_fft=2048, hop_length=160, n_mels=229, fmin=30, fmax=8000)
     frames = np.abs(frames)
     frames = np.transpose(frames)
     temp, nbins = frames.shape
@@ -253,10 +254,10 @@ def make_datasets(path, output_file,tag='train',nums=None,render=True):
             try:
  
   
-                targets0, split_audio0, _ = tokenize(file1, file1[:-4]+inst_list[i*2]+'.wav',method='stft')
-                targets1, split_audio1, _ = tokenize(file2, file2[:-4]+inst_list[i*2]+'.wav',method='stft')
-                split_audio2 = tokenize(file1, file1[:-4]+inst_list[i*2+1]+'.wav',method='stft',return_target=False)
-                split_audio3 = tokenize(file2, file2[:-4]+inst_list[i*2+1]+'.wav',method='stft',return_target=False)
+                targets0, split_audio0, _ = tokenize(file1, file1[:-4]+inst_list[i*2]+'.wav',method=args.method)
+                targets1, split_audio1, _ = tokenize(file2, file2[:-4]+inst_list[i*2]+'.wav',method=args.method)
+                split_audio2 = tokenize(file1, file1[:-4]+inst_list[i*2+1]+'.wav',method=args.method,return_target=False)
+                split_audio3 = tokenize(file2, file2[:-4]+inst_list[i*2+1]+'.wav',method=args.method,return_target=False)
 
 
                 z0=[]#list(zip(targets0, list(split_audio0),list(split_audio2)))
