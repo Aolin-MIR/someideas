@@ -39,7 +39,7 @@ parser.add_argument("--lr-scheduler", choices=['plateau', 'step'], default='plat
 parser.add_argument("--lr-scheduler-patience", type=int, default=5, help='lr scheduler plateau: Number of epochs with no improvement after which learning rate will be reduced')
 parser.add_argument("--lr-scheduler-step-size", type=int, default=50, help='lr scheduler step: number of epochs of learning rate decay.')
 parser.add_argument("--lr-scheduler-gamma", type=float, default=0.1, help='learning rate is multiplied by the gamma to decrease it')
-parser.add_argument("--max-epochs", type=int, default=60, help='max number of epochs')
+parser.add_argument("--maxepochs", type=int, default=60, help='max number of epochs')
 parser.add_argument("--resume", type=str, help='checkpoint file to resume')
 parser.add_argument("--segwidth", type=int, default=64, help='')
 parser.add_argument("--dropout", type=float, default=0.1, help='dropout rate')
@@ -50,7 +50,7 @@ parser.add_argument("--train_nums", type=int, default=429405, help='')
 parser.add_argument("--valid_nums", type=int, default=72055, help='')
 # parser.add_argument("--train_nums", type=int, default=64, help='')
 # parser.add_argument("--valid_nums", type=int, default=64, help='')
-parser.add_argument("--nfft", type=int, default=512, help='')
+parser.add_argument("--nfft", type=int, default=2048, help='')
 parser.add_argument("--dmodel", type=int, default=512, help='')
 parser.add_argument("--layers", type=int, default=6, help='')
 parser.add_argument("--d_layers", type=int, default=6, help='')
@@ -723,7 +723,7 @@ if __name__=="__main__":
 
     print("training %s for thoegazer..." % 'transformer ')
     since = time.time()
-    for epoch in range(start_epoch, args.max_epochs):
+    for epoch in range(start_epoch, args.maxepochs):
 
         if args.lr_scheduler == 'step':
             lr_scheduler.step()
