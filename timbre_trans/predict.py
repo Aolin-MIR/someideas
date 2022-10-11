@@ -56,6 +56,7 @@ parser.add_argument("--layers", type=int, default=6, help='')
 parser.add_argument("--d_layers", type=int, default=6, help='')
 parser.add_argument("--usetrans", type=int, default=1, help='')
 parser.add_argument("--usemaxpool", type=int, default=1, help='')
+parser.add_argument("--features", type=str, default='melspec', help='')
 args = parser.parse_args()
 
 class MyConfig(T5Config):
@@ -157,9 +158,12 @@ class Thoegaze(nn.Module):
         super().__init__()
         self.d_model  = d_model
         self.unet = unet
+        if args.features=='melspec':
+            n_features=229
+        else: n_features=int(args.nfft/2+1)  
         self.use_transcription_loss=use_transcription_loss
         encoder_config = copy.deepcopy(config)
-        self.embedding = nn.Linear(int(args.nfft/2+1),self.d_model)
+        self.embedding = nn.Linear(n_features,self.d_model)
         self.s_encoder = T5Stack(encoder_config)
         self.t_encoder = T5Stack(encoder_config)
         self.decoder=T5Stack(encoder_config)
@@ -168,14 +172,14 @@ class Thoegaze(nn.Module):
         s_decoder_config.is_encoder_decoder = False   
         s_decoder_config.input_length=int(args.segwidth*1.5) 
         s_decoder_config.num_layers = d_layers
-        
+      
         self.use_max_pooling=use_max_pooling
         if self.use_max_pooling:
            self.max_pool=nn.Maxpool2d((args.segwidth,1)) 
         self.linear = nn.Linear(self.d_model, 91+args.segwidth)
         # self.m = nn.Softmax(dim=-1)
         # self.relu = nn.ReLU()
-        self.out =nn.Linear(self.d_model, int(args.nfft/2+1))
+        self.out =nn.Linear(self.d_model,n_features)
 
         self.tgt_emb = nn.Embedding(args.segwidth+91, d_model)
         self.pos_emb = LearnableAbsolutePositionEmbedding(args.segwidth, d_model
@@ -253,7 +257,36 @@ preemphasis = .97 # or None
 max_db = 100
 ref_db = 20
 top_db = 15
+def _mel_to_linear_matrix(sr, n_fft, n_mels):
+    m = librosa.filters.mel(sr, n_fft, n_mels)
+    m_t = np.transpose(m)
+    p = np.matmul(m, m_t)
+    d = [1.0 / x if np.abs(x) > 1.0e-8 else x for x in np.sum(p, axis=0)]
+    return np.matmul(m_t, np.diag(d))
 
+def melspectrogram2wav(mel):
+    '''# Generate wave file from spectrogram'''
+    # transpose
+    mel = mel.T
+
+    # de-noramlize
+    mel = (np.clip(mel, 0, 1) * max_db) - max_db + ref_db
+
+    # to amplitude
+    mel = np.power(10.0, mel * 0.05)
+    m = _mel_to_linear_matrix(sr, n_fft, 229)
+    mag = np.dot(m, mel)
+
+    # wav reconstruction
+    wav = griffin_lim(mag)
+
+    # de-preemphasis
+    wav = signal.lfilter([1], [1, -preemphasis], wav)
+
+    # trim
+    wav, _ = librosa.effects.trim(wav)
+
+    return wav.astype(np.float32)
 def spectrogram2wav(mag):
     '''# Generate wave file from spectrogram'''
     # transpose
@@ -327,7 +360,8 @@ def predict(content,timbre):
             else:
                 _timbre=_t
     if not args.usemaxpool:
-        _timbre=torch.mean(_timbre[:-tpl,:],0)            
+        _timbre=torch.mean(_timbre[:-tpl,:],0)   
+    
     i=0
     spec=None
     while i< len(timbre):
@@ -342,20 +376,12 @@ def predict(content,timbre):
     spec=spec[:-cpl,:]
     #2wav
 
-    wav = spectrogram2wav(spec)
+    wav = melspectrogram2wav(spec)
     # librosa.output.write_wav("gg_stft.wav", wav, sr)
     librosa.output.write_wav("test.wav", wav, sr)
 
 
-
-
-
-
-
 index_path = None
-
-
-
 
 if __name__=="__main__":
 
