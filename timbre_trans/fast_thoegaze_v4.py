@@ -57,6 +57,7 @@ parser.add_argument("--d_layers", type=int, default=6, help='')
 parser.add_argument("--usetrans", type=int, default=1, help='')
 parser.add_argument("--usemaxpool", type=int, default=1, help='')
 parser.add_argument("--nocross", type=int, default=1, help='')
+parser.add_argument("--features", type=str, default='melspec', help='')
 args = parser.parse_args()
 
 class MyConfig(T5Config):
@@ -158,7 +159,10 @@ class Thoegaze(nn.Module):
         self.unet = unet
         self.use_transcription_loss=use_transcription_loss
         encoder_config = copy.deepcopy(config)
-        self.embedding = nn.Linear(int(args.nfft/2+1),self.d_model)
+        if args.features=='melspec':
+            n_features=229
+        else: n_features=int(args.nfft/2+1)
+        self.embedding = nn.Linear(n_features,self.d_model)
         self.s_encoder = T5Stack(encoder_config)
         self.t_encoder = T5Stack(encoder_config)
         self.decoder=T5Stack(encoder_config)
@@ -174,7 +178,8 @@ class Thoegaze(nn.Module):
         self.linear = nn.Linear(self.d_model, 91+args.segwidth)
         # self.m = nn.Softmax(dim=-1)
         # self.relu = nn.ReLU()
-        self.out =nn.Linear(self.d_model, int(args.nfft/2+1))
+
+        self.out =nn.Linear(self.d_model, n_features)
 
         self.tgt_emb = nn.Embedding(args.segwidth+91, d_model)
         self.pos_emb = LearnableAbsolutePositionEmbedding(args.segwidth, d_model
