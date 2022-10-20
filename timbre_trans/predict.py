@@ -175,7 +175,7 @@ class Thoegaze(nn.Module):
       
         self.use_max_pooling=use_max_pooling
         if self.use_max_pooling:
-           self.max_pool=nn.Maxpool2d((args.segwidth,1)) 
+           self.max_pool=nn.MaxPool2d((args.segwidth,1)) 
         self.linear = nn.Linear(self.d_model, 91+args.segwidth)
         # self.m = nn.Softmax(dim=-1)
         # self.relu = nn.ReLU()
@@ -347,7 +347,6 @@ def predict(content,timbre):
         i+=args.batch_size
         _t=torch.reshape(_t,(-1,_t.size()[-1]))
         if args.usemaxpool:
-
             _t,_=torch.max(_t,0)
             if _timbre:
                 _timbre=torch.stack(_t,_timbre)
@@ -361,7 +360,6 @@ def predict(content,timbre):
                 _timbre=_t
     if not args.usemaxpool:
         _timbre=torch.mean(_timbre[:-tpl,:],0)   
-    
     i=0
     spec=None
     while i< len(timbre):
@@ -390,8 +388,21 @@ if __name__=="__main__":
     if use_gpu:
         torch.backends.cudnn.benchmark = True
     print('alpha',args.alpha,'beta',args.beta,'gamma',args.gamma)
-    model=Thoegaze(d_model=args.dmodel,use_transcription_loss=False,use_max_pooling=args.usemaxpool)
+    # model=Thoegaze(d_model=args.dmodel,use_transcription_loss=False,use_max_pooling=args.usemaxpool)
+    if use_gpu:
+        model=torch.load('thoagazer_s4_sgd_plateau_bs8_lr5.0e-05_wd1.0e-02_contrastive-best-los-tt.pth')
+    else:
+        model=torch.load('thoagazer_s4_sgd_plateau_bs8_lr5.0e-05_wd1.0e-02_contrastive-best-los-tt.pth',map_location=torch.device('cpu'))
+    if isinstance(model,torch.nn.DataParallel):
+        params = model.module
+    # if use_gpu:
+    # for k,v in params.items():
+    #     print(398,k)
+    model.eval()
+    print(type(model))
 
+
+    # predict()
 
 
 
