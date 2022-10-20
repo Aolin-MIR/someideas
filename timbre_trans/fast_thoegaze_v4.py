@@ -56,7 +56,7 @@ parser.add_argument("--layers", type=int, default=6, help='')
 parser.add_argument("--d_layers", type=int, default=6, help='')
 parser.add_argument("--usetrans", type=int, default=1, help='')
 parser.add_argument("--usemaxpool", type=int, default=1, help='')
-parser.add_argument("--nocross", type=int, default=1, help='')
+parser.add_argument("--nocross", type=int, default=0, help='')
 parser.add_argument("--features", type=str, default='melspec', help='')
 args = parser.parse_args()
 
@@ -239,21 +239,33 @@ class Thoegaze(nn.Module):
             y1= self.decoder(inputs_embeds=s[1]+t[0])[0]
             y2= self.decoder(inputs_embeds=s[2]+t[3])[0]
             y3= self.decoder(inputs_embeds=s[3]+t[2])[0]
+
         else:
             y0= self.decoder(inputs_embeds=s[2]+t[1])[0]
             y1= self.decoder(inputs_embeds=s[3]+t[0])[0]
             y2= self.decoder(inputs_embeds=s[0]+t[3])[0]
             y3= self.decoder(inputs_embeds=s[1]+t[2])[0]
+            y0_= self.out(self.decoder(inputs_embeds=s[0]+t[1])[0])
+            y1_= self.out(self.decoder(inputs_embeds=s[1]+t[0])[0])
+            y2_= self.out(self.decoder(inputs_embeds=s[2]+t[3])[0])
+            y3_= self.out(self.decoder(inputs_embeds=s[3]+t[2])[0])
 
+        
         y0=self.out(y0)
         y1=self.out(y1)
         y2=self.out(y2)
         y3=self.out(y3)
 
         if self.use_transcription_loss:
-            return [y0,y1,y2,y3]+transcription_out+t
+            if args.nocross:
+                return [y0,y1,y2,y3]+transcription_out+t
+            else:
+                return [y0,y1,y2,y3]+[y0_,y1_,y2_,y3_]+transcription_out+t
         else:
-            return [y0,y1,y2,y3]+t # required to return a state
+            if args.nocross:
+                return [y0,y1,y2,y3]+t # required to return a state
+            else:
+                return [y0,y1,y2,y3]+[y0_,y1_,y2_,y3_]+t
 
     def _shift_right(self, input_ids):
         decoder_start_token_id = 1
@@ -279,7 +291,10 @@ class Thoegaze(nn.Module):
 def criterion(outputs,inputs,score=None,alpha=0.5,beta=1,gamma=1):
     
     if score:
-        y1,y2,y3,y4,_s1,_s2,_s3,_s4,t1,t2,t3,t4=outputs
+        if args.nocross:
+            y1,y2,y3,y4,_s1,_s2,_s3,_s4,t1,t2,t3,t4=outputs
+        else:
+            y1,y2,y3,y4,y1_,y2_,y3_,y4_,_s1,_s2,_s3,_s4,t1,t2,t3,t4=outputs
         sa,sb=score
         if use_gpu:
             sa = sa.cuda().long()
@@ -293,17 +308,32 @@ def criterion(outputs,inputs,score=None,alpha=0.5,beta=1,gamma=1):
         loss_transcription = sfn(torch.transpose(_s1, -2, -1),sa) + sfn(torch.transpose(_s3, -2, -1),sa) +sfn(torch.transpose(_s2, -2, -1),sb)+ sfn(torch.transpose(_s4, -2, -1),sb)
 
     else:
-        y1,y2,y3,y4,t1,t2,t3,t4=outputs
+        if args.nocross:
+            y1,y2,y3,y4,t1,t2,t3,t4=outputs
+        else:
+            y1,y2,y3,y4,y1_,y2_,y3_,y4_,t1,t2,t3,t4=outputs
+        
 
     x1,x2,x3,x4=inputs
     fn=torch.nn.MSELoss()
     # loss_s=fn(s1,s3)+fn(s2,s4) 
     loss_t=0#fn(t1,t2)+fn(t3,t4)
-    loss_syth=fn(x1,y1)+fn(x2,y2)+fn(x3,y3)+fn(x4,y4)
-    if score:
-        return beta*loss_syth+gamma*loss_transcription,loss_transcription,loss_syth,loss_t
+    if args.nocross:
+        loss_syth=fn(x1,y1)+fn(x2,y2)+fn(x3,y3)+fn(x4,y4)
+        if score:
+            return beta*loss_syth+gamma*loss_transcription,loss_transcription,loss_syth,loss_t
+        else:
+            return  beta*loss_syth,loss_syth,loss_t        
     else:
-        return  beta*loss_syth,loss_syth,loss_t
+        triplet_loss = nn.TripletMarginLoss(margin=1.0, p=2)
+        loss_syth=fn(x1,y1)+fn(x2,y2)+fn(x3,y3)+fn(x4,y4)#+fn(y1,y1_)+fn(y2,y2_)+fn(y3,y3_)+fn(y4,y4_)
+        loss_t= triplet_loss(y1_,y1,y2)+triplet_loss(y2_,y2,y1)+triplet_loss(y3_,y3,y4)+triplet_loss(y4_,y4,y3)+triplet_loss(y1_,y1,y3)+triplet_loss(y2_,y2,y4)+triplet_loss(y3_,y3,y1)+triplet_loss(y4_,y4,y1)
+        # loss_syth+=loss_t
+
+        if score:
+            return alpha*loss_t+beta*loss_syth+gamma*loss_transcription,loss_transcription,loss_syth,loss_t
+        else:
+            return  alpha*loss_t+beta*loss_syth,loss_syth,loss_t
 
 
 def note_f1_v3(outputs,sa,sb):
@@ -396,9 +426,9 @@ def train(epoch):
     it = 0
     total_it=args.train_nums//train_dataloader.batch_size
 
-    pbar = tqdm(train_dataloader, unit="audios", unit_scale=train_dataloader.batch_size,total=total_it)
+    # pbar = tqdm(train_dataloader, unit="audios", unit_scale=train_dataloader.batch_size,total=total_it)
     # print( 245,len(pbar))
-    for batch in pbar:
+    for batch in train_dataloader:
         if it==total_it:
             break
 
@@ -436,16 +466,16 @@ def train(epoch):
         it += 1
         global_step += 1
         running_loss += loss.item()
-        # running_loss_t += loss_t.item()
+        running_loss_t += loss_t.item()
         if args.usetrans:
             running_loss_trans += loss_trans.item()
 
         running_loss_syth += loss_syth.item()
         if it%1000==0:
-            pbar.set_postfix({'epoch':str(epoch+1),
+            print({'epoch':str(epoch+1),
                 'train_loss': "%.05f" % (running_loss / it),
                 # 'loss_s': "%.05f" % (running_loss_s / it),
-                'loss_t': "%.05f" % (running_loss_t / it),
+                'loss_const': "%.05f" % (running_loss_t / it),
                 'loss_trans': "%.05f" % (running_loss_trans / it),
                 'loss_syth': "%.05f" % (running_loss_syth / it),
                         # '系统总计内存':"%.05f" % zj,
@@ -462,7 +492,7 @@ def train(epoch):
     # writer.add_scalar('%s/epoch_loss' % phase, epoch_loss, epoch)
 @torch.no_grad()
 def valid(epoch):
-    global best_f1, best_loss, global_step
+    global best_f1, best_loss, global_step,best_const_loss
     epsilon = 1e-7
     phase = 'valid'
     model.eval()  # Set model to evaluate mode
@@ -481,9 +511,9 @@ def valid(epoch):
     #         adj[j,i]=1
     # if use_gpu:
     #     adj=adj.cuda()
-    pbar = tqdm(valid_dataloader,
-         unit="audios", unit_scale=valid_dataloader.batch_size,total=total_it)
-    for batch in pbar:
+    # pbar = tqdm(valid_dataloader,
+    #      unit="audios", unit_scale=valid_dataloader.batch_size,total=total_it)
+    for batch in valid_dataloader:
         if it==total_it:
             break
         x0,x1,x2,x3=batch['x0'],batch['x1'],batch['x2'],batch['x3']
@@ -512,7 +542,7 @@ def valid(epoch):
         global_step += 1
         running_loss += loss.item()
         # running_loss_s += loss_s
-        # running_loss_t += loss_t.item()
+        running_loss_t += loss_t.item()
         
         running_loss_syth += loss_syth.item()
     #加速noteF1的计算
@@ -543,10 +573,11 @@ def valid(epoch):
         # print('系统空闲内存:%d.3GB' % kx)
         # update the progress bar
         if it%300==0:
-            pbar.set_postfix({
+            # pbar.set_postfix(
+            print({
                 'valid_loss': "%.05f" % (running_loss / it),
                 # 'loss_s': "%.05f" % (running_loss_s / it),
-                'loss_t': "%.05f" % (running_loss_t / it),
+                'loss_const': "%.05f" % (running_loss_t / it),
                 'loss_trans': "%.05f" % (running_loss_trans / it),
                 'loss_syth': "%.05f" % (running_loss_syth / it),
                 'note_f1':"%.05f" % (nf1),
@@ -558,7 +589,8 @@ def valid(epoch):
 
         # print('本进程占用内存(MB)%.05f' % (bj))
     # accuracy = correct/total
-    epoch_loss = (running_loss / it)#.tolist()
+    epoch_loss = (running_loss_syth / it)#.tolist()
+    epoch_const_loss=(running_loss_t / it)
     # writer.add_scalar('%s/accuracy' % phase, 100*accuracy, epoch)
     # writer.add_scalar('%s/epoch_loss' % phase, epoch_loss, epoch)
 
@@ -582,8 +614,11 @@ def valid(epoch):
         best_loss = epoch_loss
         torch.save(checkpoint, './checkpoints/best-loss-tt-checkpoint-%s.pth' % full_name)
         torch.save(model, './checkpoints/%s-best-los-tt.pth' % ( full_name))
+    elif epoch_const_loss<best_const_loss:
+        torch.save(checkpoint, './checkpoints/best-const-loss-tt-checkpoint-%s.pth' % full_name)
+        torch.save(model, './checkpoints/%s-best-const-los-tt.pth' % ( full_name))
     else:
-        torch.save(checkpoint, './checkpoints/last-tt.pth')
+        torch.save(checkpoint, './checkpoints/%s-last-tt.pth'% ( full_name))
     del checkpoint  # reduce memory
 
     return epoch_loss
@@ -702,6 +737,7 @@ if __name__=="__main__":
     start_epoch = 0
     best_accuracy = 0
     best_loss = 1e100
+    best_const_loss = 1e100
     global_step = 0
 
     if args.resume:
