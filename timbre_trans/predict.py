@@ -5,7 +5,7 @@ import os
 from einops import rearrange 
 import torch
 import copy
-from mae_torch_preprocess import tokenize
+from mae_torch_preprocess import tokenize,renderMidi,select_midi_soundfont
 import scipy.signal as signal
 import argparse
 import time
@@ -18,7 +18,7 @@ from torch.utils.data import DataLoader
 
 import numpy as np
 from tfrecord.torch.dataset import TFRecordDataset
-
+import soundfile as sf
 import torch.nn.functional as F
 from tfrecord import reader
 from tfrecord import iterator_utils
@@ -41,7 +41,7 @@ parser.add_argument("--lr-scheduler-step-size", type=int, default=50, help='lr s
 parser.add_argument("--lr-scheduler-gamma", type=float, default=0.1, help='learning rate is multiplied by the gamma to decrease it')
 parser.add_argument("--max-epochs", type=int, default=60, help='max number of epochs')
 parser.add_argument("--resume", type=str, help='checkpoint file to resume')
-parser.add_argument("--segwidth", type=int, default=64, help='')
+parser.add_argument("--segwidth", type=int, default=256, help='')
 parser.add_argument("--dropout", type=float, default=0.1, help='dropout rate')
 parser.add_argument("--alpha", type=float, default=0.5, help='')
 parser.add_argument("--beta", type=float, default=0.8, help='')
@@ -50,7 +50,8 @@ parser.add_argument("--train_nums", type=int, default=429405, help='')
 parser.add_argument("--valid_nums", type=int, default=72055, help='')
 # parser.add_argument("--train_nums", type=int, default=64, help='')
 # parser.add_argument("--valid_nums", type=int, default=64, help='')
-parser.add_argument("--nfft", type=int, default=512, help='')
+parser.add_argument("--nfft", type=int, default=2048, help='')
+parser.add_argument("--sr", type=int, default=22050, help='')
 parser.add_argument("--dmodel", type=int, default=512, help='')
 parser.add_argument("--layers", type=int, default=6, help='')
 parser.add_argument("--d_layers", type=int, default=6, help='')
@@ -58,7 +59,19 @@ parser.add_argument("--usetrans", type=int, default=1, help='')
 parser.add_argument("--usemaxpool", type=int, default=1, help='')
 parser.add_argument("--features", type=str, default='melspec', help='')
 args = parser.parse_args()
-
+sr = args.sr # Sample rate.
+n_fft = args.nfft # fft points (samples)
+# frame_shift = int(sr/32) # seconds
+frame_length = int(sr/32) # seconds
+hop_length =int(sr/32) # samples.
+# win_length = n_fft # int(sr*frame_length) # samples.
+# n_mels = 80 # Number of Mel banks to generate
+power = 1.2 # Exponent for amplifying the predicted magnitude
+n_iter = 100 # Number of inversion iterations
+preemphasis = .97 # or None
+max_db = 100
+ref_db = 20
+top_db = 15
 class MyConfig(T5Config):
     def __init__(self,
                  use_dense=False,
@@ -244,21 +257,9 @@ class Thoegaze(nn.Module):
         return shifted_input_ids
 
 
-sr = 25600 # Sample rate.
-n_fft = args.nfft # fft points (samples)
-frame_shift = int(sr/32) # seconds
-frame_length = int(sr/32) # seconds
-hop_length = int(sr*frame_shift) # samples.
-win_length = n_fft # int(sr*frame_length) # samples.
-# n_mels = 80 # Number of Mel banks to generate
-power = 1.2 # Exponent for amplifying the predicted magnitude
-n_iter = 100 # Number of inversion iterations
-preemphasis = .97 # or None
-max_db = 100
-ref_db = 20
-top_db = 15
+
 def _mel_to_linear_matrix(sr, n_fft, n_mels):
-    m = librosa.filters.mel(sr, n_fft, n_mels)
+    m = librosa.filters.mel(sr=sr, n_fft=n_fft, n_mels=n_mels)
     m_t = np.transpose(m)
     p = np.matmul(m, m_t)
     d = [1.0 / x if np.abs(x) > 1.0e-8 else x for x in np.sum(p, axis=0)]
@@ -314,7 +315,7 @@ def griffin_lim(spectrogram):
     X_best = copy.deepcopy(spectrogram)
     for i in range(n_iter):
         X_t = invert_spectrogram(X_best)
-        est = librosa.stft(X_t, n_fft, hop_length, win_length=win_length)
+        est = librosa.stft(y=X_t, n_fft=n_fft, hop_length=hop_length, win_length=args.nfft)
         phase = est / np.maximum(1e-8, np.abs(est))
         X_best = spectrogram * phase
     X_t = invert_spectrogram(X_best)
@@ -326,15 +327,44 @@ def invert_spectrogram(spectrogram):
     '''
     spectrogram: [f, t]
     '''
-    return librosa.istft(spectrogram, hop_length, win_length=win_length, window="hann")
+    return librosa.istft(stft_matrix=spectrogram, hop_length=hop_length, win_length=args.nfft, window="hann")
+def get_wav(spectr,name='test.wav'):
+    # spectr = torchfile.load(S)
+    spectr=spectr.transpose(-1,-2)
+    S = np.zeros([int(args.nfft / 2) + 1, spectr.shape[1]])
+    S[:spectr.shape[0]] = spectr
 
+
+    def update_progress(progress):
+        print ("\rProgress: [{0:50s}] {1:.1f}%".format('#' * int(progress * 50),
+                                                    progress * 100),)
+
+
+    def phase_restore(mag, random_phases, N=50):
+        p = np.exp(1j * (random_phases))
+
+        for i in range(N):
+            _, p = librosa.magphase(librosa.stft(
+                librosa.istft(stft_matrix=mag * p,n_fft=args.nfft,hop_length=int(args.sr/32)), n_fft=args.nfft,hop_length=int(args.sr/32)))
+            update_progress(float(i) / N)
+        return p
+
+    random_phase = S.copy()
+    np.random.shuffle(random_phase)
+    p = phase_restore((np.exp(S) - 1), random_phase, N=500)
+
+    # ISTFT
+    y = librosa.istft(stft_matrix=(np.exp(S) - 1) * p,hop_length=int(args.sr/32))
+    sf.write(name, y, args.sr, 'PCM_24')
+    # librosa.output.write_wav('test.wav', y, args.sr, norm=False)
 
 @torch.no_grad()
 def predict(content,timbre):
-    content,cpl=tokenize(audio=content,method='stft',sample_rate=25600,hop_width=int(25600/32),nfft=args.nfft,seg_width=args.segwidth,return_target=False)
-    timbre,tpl=tokenize(audio=timbre,method='stft',sample_rate=25600,hop_width=int(25600/32),nfft=args.nfft,seg_width=args.segwidth,return_target=False)
-    model.eval()
-
+    content,cpl=tokenize(audio=content,method='stft',sample_rate=44100,hop_width=int(args.sr/32),nfft=args.nfft,seg_width=args.segwidth,return_target=False,delete_wav=False,return_padding_length=True)
+    timbre,tpl=tokenize(audio=timbre,method='stft',sample_rate=44100,hop_width=int(args.sr/32),nfft=args.nfft,seg_width=args.segwidth,return_target=False,delete_wav=False,return_padding_length=True)
+    # model.eval()
+    content=torch.from_numpy(content)
+    timbre=torch.from_numpy(timbre)
     if use_gpu:
         content = content.cuda()
         timbre = timbre.cuda()
@@ -348,13 +378,13 @@ def predict(content,timbre):
         _t=torch.reshape(_t,(-1,_t.size()[-1]))
         if args.usemaxpool:
             _t,_=torch.max(_t,0)
-            if _timbre:
-                _timbre=torch.stack(_t,_timbre)
+            if not _timbre==None:
+                _timbre=torch.stack([_t,_timbre])
                 _timbre,_=torch.max(_timbre,0)
             else:
                 _timbre=_t
         else:
-            if _timbre:
+            if not _timbre==None:
                 _timbre=torch.cat((_timbre,_t),0)
             else:
                 _timbre=_t
@@ -362,47 +392,96 @@ def predict(content,timbre):
         _timbre=torch.mean(_timbre[:-tpl,:],0)   
     i=0
     spec=None
-    while i< len(timbre):
+    specs=[]
+    while i< len(content):
         out = model(content=content[i:i+args.batch_size,:,:],timbre=_timbre)
         i+=args.batch_size
-        out=torch.reshape(_t,(-1,out.size()[-1]))
-        if spec:
-            spec=torch.cat((spec,out),0)
-        else:
-            spec=out
+        out=torch.reshape(out,(-1,out.size()[-1]))
+        specs.append(out)
+        # if not spec==None:
+        #     spec=torch.cat((spec,out),0)
+        # else:
+        #     spec=out
     
-    spec=spec[:-cpl,:]
+    # spec=spec[:-cpl,:]
     #2wav
-
-    wav = melspectrogram2wav(spec)
+    for i, spec in enumerate(specs):
+        get_wav(spec,str(i)+'.wav')
     # librosa.output.write_wav("gg_stft.wav", wav, sr)
-    librosa.output.write_wav("test.wav", wav, sr)
+    # sf.write('test.wav', wav, 25600, 'PCM_24')
+    # librosa.output.write_wav("test.wav", wav, sr)
+
+
+@torch.no_grad()
+def test(content,timbre):
+    content,cpl=tokenize(audio=content,method='stft',sample_rate=args.sr,hop_width=int(args.sr/32),nfft=args.nfft,seg_width=args.segwidth,return_target=False,delete_wav=False,return_padding_length=True)
+    print(418,content.shape)
+    # content=content[0]#
+    content=np.reshape(content,(-1,1025))
+    content=content[:-cpl,:]
+    #2wav
+    print(423,content.shape)
+    get_wav(content)
+
 
 
 index_path = None
-
+instruments = {
+    # #'piano': ('grand-piano-YDP-20160804.sf2', ''),
+    # 'piano': ('SoundBlasterPiano.sf2', ''),
+    # # 'flute': ('Milton_Pan_flute.sf2', ''),
+    # 'guitar': ('spanish-classical-guitar.sf2', ''),
+    # # 'harp' : ('Roland_SC-88.sf2', 'Harp'),
+    # # 'kalimba' : ('Roland_SC-88.sf2', 'Kalimba'),
+    # # 'pan' : ('Roland_SC-88.sf2', 'Pan flute')
+    # 'piano':('Chateau Grand Lite-v1.0.sf2',''),
+    'electric guitar Dry':('Electric-Guitars-JNv4.4.sf2','Clean Guitar GU'),
+    'electric guitar Distort':('Electric-Guitars-JNv4.4.sf2','Distortion SG'),
+    'electric guitar Jazz':('Electric-Guitars-JNv4.4.sf2','Jazz Guitar FR3'),
+    'acoustic guitar':('Acoustic Guitars JNv2.4.sf2',''),
+    'string':('Nice-Strings-PlusOrchestra-v1.6.sf2','String'),
+    'orchestra':('Nice-Strings-PlusOrchestra-v1.6.sf2','Orchestra'),
+    'cello':('Nice-Strings-PlusOrchestra-v1.6.sf2','Cello 1'),
+    'violin':('Nice-Strings-PlusOrchestra-v1.6.sf2','Violin 1'),
+    'brass':('Nice-Strings-PlusOrchestra-v1.6.sf2','Brass'),
+    'trumpet':('Nice-Strings-PlusOrchestra-v1.6.sf2','Trumpet 2'),
+    'flute':('Expressive Flute SSO-v1.2.sf2',''),
+    'mandolin':('Chris Mandolin-4U-v3.0.sf2','Full Exp Mandolin'),
+}
 if __name__=="__main__":
 
     use_gpu = torch.cuda.is_available()
+    device = torch.device("cuda:0" if use_gpu else "cpu")
     print('use_gpu', use_gpu,'use_trans',args.usetrans)
     if use_gpu:
         torch.backends.cudnn.benchmark = True
-    print('alpha',args.alpha,'beta',args.beta,'gamma',args.gamma)
+    # print('alpha',args.alpha,'beta',args.beta,'gamma',args.gamma)
     # model=Thoegaze(d_model=args.dmodel,use_transcription_loss=False,use_max_pooling=args.usemaxpool)
     if use_gpu:
-        model=torch.load('thoagazer_s4_sgd_plateau_bs8_lr5.0e-05_wd1.0e-02_contrastive-best-los-tt.pth')
+        model=torch.load('checkpoints/thoagazer_s4_sgd_plateau_bs8_lr5.0e-05_wd1.0e-02_contrastive-best-los-tt.pth')
     else:
-        model=torch.load('thoagazer_s4_sgd_plateau_bs8_lr5.0e-05_wd1.0e-02_contrastive-best-los-tt.pth',map_location=torch.device('cpu'))
+        model=torch.load('checkpoints/thoagazer_s4_sgd_plateau_bs8_lr5.0e-05_wd1.0e-02_contrastive-best-los-tt.pth',map_location=torch.device('cpu'))
+    # print(type(model),418)
     if isinstance(model,torch.nn.DataParallel):
-        params = model.module
+        model = model.module
+    model.to(device)
+    # print(model.device)
     # if use_gpu:
     # for k,v in params.items():
     #     print(398,k)
     model.eval()
-    print(type(model))
-
-
+    # print(model.device)
+    # print(type(model))
+    
+    midi_content='test_music/MIDI-Unprocessed_Recital5-7_MID--AUDIO_05_R1_2018_wav--1.midi'
+    midi_timbre='test_music/MIDI-Unprocessed_Recital5-7_MID--AUDIO_05_R1_2018_wav--1.midi'
+    instruments_li=list(instruments)
+    instrument_content=instruments_li[0]
+    instrument_timbre=instruments_li[1]
+    content=renderMidi( midi_content, select_midi_soundfont(*instruments[instrument_content]),instrument_content,return_file_path=True)
+    timbre=renderMidi( midi_timbre, select_midi_soundfont(*instruments[instrument_timbre]),instrument_timbre,return_file_path=True)
     # predict()
-
+    # print(content,timbre)
+    test(timbre,timbre)
 
 
