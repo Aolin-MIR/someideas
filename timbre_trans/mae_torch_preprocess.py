@@ -23,16 +23,16 @@ import argparse
 
 parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.ArgumentDefaultsHelpFormatter)
 # Create a temporary config file pointing to the correct soundfont
-parser.add_argument("--samplerate", type=int, default=25600, help='')
+parser.add_argument("--samplerate", type=int, default=22050, help='')
 parser.add_argument("--nfft", type=int, default=2048, help='')
 parser.add_argument("--delete_wav", type=int, default=1, help='')
 parser.add_argument("--segwidth", type=int, default=256, help='')
-parser.add_argument("--train_nums", type=int, default=200000, help='')
-parser.add_argument("--valid_nums", type=int, default=20000, help='')
+parser.add_argument("--train_nums", type=int, default=100000, help='')
+parser.add_argument("--valid_nums", type=int, default=5000, help='')
 parser.add_argument("--traindatasets", type=str, default='/common-data/liaolin/traindatasets', help='')
 parser.add_argument("--validdatasets", type=str, default='/common-data/liaolin/validdatasets', help='')
 parser.add_argument("--maestropath", type=str, default='/common-data/liaolin/maestro-v3.0.0/', help='')
-parser.add_argument("--method", type=str, default='melspec', help='')
+parser.add_argument("--method", type=str, default='stft', help='')
 args = parser.parse_args()
 
 sample_rate = args.samplerate
@@ -100,7 +100,7 @@ def midi2wav(file, outpath, cfg):
     #print('Converting midi to wav...', end='', flush=True)
     return subprocess.call(cmds, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 # render the given midi file with the given instruments, generate spectrograms and save
-def renderMidi( f, cfgs,instrument):
+def renderMidi( f, cfgs,instrument,return_file_path=False):
     print(str(f), flush=True)
     # min_len = 2 << 63
     # render the waveform files
@@ -110,7 +110,10 @@ def renderMidi( f, cfgs,instrument):
     file = Path(f).with_suffix('.'+instrument+'.wav')
     if midi2wav(f, file, cfgs)!=0:
         print('midi2wav failed!')
-        return
+    else:
+        if return_file_path:
+            return file
+
     # cur_len = len(librosa.load(str(file), sr = sample_rate)[0])
     # min_len = min(min_len, cur_len)
 
@@ -169,10 +172,12 @@ def tokenize(midfile=None, audio=None,method='cqt',return_target=True,delete_wav
         frames = librosa.cqt(frames, sr=sample_rate,
                          hop_length=hop_width, fmin=27.50, n_bins=nbins, bins_per_octave=36)
     elif method == 'stft':
-        frames = librosa.stft(y=frames,n_fft=nfft, hop_length=hop_width,win_length=hop_width)
+        frames = librosa.stft(y=frames,n_fft=nfft, hop_length=hop_width)
+        frames,phase=librosa.magphase(frames)
+        frames=np.log1p(frames)
     elif method == 'melspec':
         frames = librosa.feature.melspectrogram(y=frames, sr=sample_rate, n_fft=2048, hop_length=hop_width,n_mels=229, fmin=30, fmax=8000)# librosa.feature.melspectrogram(audio, sr=16000, n_fft=2048, hop_length=160, n_mels=229, fmin=30, fmax=8000)
-    frames = np.abs(frames)
+    # frames = np.abs(frames)
     frames = np.transpose(frames)
     temp, nbins = frames.shape
     # print("nbins",nbins)
@@ -217,7 +222,7 @@ def dump_targets(midfile, segs_num):
 
 
 
-def make_datasets(path, output_file,tag='train',nums=None,render=True):
+def make_datasets(path, output_file,voutput_file,tag='train',nums=None,vnums=None,render=True):
     
     mid_Filelist = []
     for home, dirs, files in os.walk(path):
@@ -233,7 +238,10 @@ def make_datasets(path, output_file,tag='train',nums=None,render=True):
             # Filelist.append( filename)
 
     writer=tfrecord.TFRecordWriter(output_file)
+    vwriter=tfrecord.TFRecordWriter(voutput_file)
     cout=0
+    vout=0
+    mode=0
     random.shuffle(mid_Filelist)
     inst_num=len(instruments)
     inst_list=list(instruments)
@@ -280,24 +288,42 @@ def make_datasets(path, output_file,tag='train',nums=None,render=True):
                     t0, s0, s2 = z0[j]
                     t1, s1 ,s3 = z1[j]
                     # print(246,t0,t1)
-                    writer.write({
-                        'x0': (s0.reshape([-1]).tobytes(), 'byte'), 
-                        'x1': (s1.reshape([-1]).tobytes(), 'byte'),
-                        'x2': (s2.reshape([-1]).tobytes(), 'byte'),
-                        'x3': (s3.reshape([-1]).tobytes(), 'byte'),
-                        't0':(str(t0).encode('utf-8'), 'byte'),
-                        't1':(str(t1).encode('utf-8'), 'byte'),
-                    })
-                    cout+=1
-                    if nums:
-                        if cout==nums:
-                            break
+                    if  mode == 0:
+                        
+                        writer.write({
+                            'x0': (s0.reshape([-1]).tobytes(), 'byte'), 
+                            'x1': (s1.reshape([-1]).tobytes(), 'byte'),
+                            'x2': (s2.reshape([-1]).tobytes(), 'byte'),
+                            'x3': (s3.reshape([-1]).tobytes(), 'byte'),
+                            't0':(str(t0).encode('utf-8'), 'byte'),
+                            't1':(str(t1).encode('utf-8'), 'byte'),
+                        })
+                        cout+=1
+                        if nums:
+                            if cout==nums:
+                                writer.close()
+                                mode=1
+                    if mode==1:
+                        vwriter.write({
+                            'x0': (s0.reshape([-1]).tobytes(), 'byte'), 
+                            'x1': (s1.reshape([-1]).tobytes(), 'byte'),
+                            'x2': (s2.reshape([-1]).tobytes(), 'byte'),
+                            'x3': (s3.reshape([-1]).tobytes(), 'byte'),
+                            't0':(str(t0).encode('utf-8'), 'byte'),
+                            't1':(str(t1).encode('utf-8'), 'byte'),
+                        })
+                        vcout+=1
+                        if vnums:
+                            if vcout==vnums:
+                                vwriter.close()
+                                return cout,vcout
+                    
             except AssertionError as e: 
                 # print(file,'too short <10s') 
                 continue
     writer.close()
 
-    return cout
+    return cout,vcout
 
 def find_files(root):
     for d, dirs, files in os.walk(root):
@@ -327,11 +353,12 @@ if __name__ == "__main__":
     # stage2 make tfrecord dataset, need to do it for twice, one for training ,one for evaluating, maestrov3 except 2018 is used as traindata,2018 for valid. so you need to edit the hierarchy of folders of maestrov3
 
     output_file =args.traindatasets+'.tfrecord'
-    cout = make_datasets(path, output_file,tag='train',nums=args.train_nums)
+    voutput_file =args.validdatasets+'.tfrecord'
+    cout,vcout = make_datasets(path, output_file,voutput_file,tag='train',nums=args.train_nums,vnums=args.valid_nums)
 
     print("train_cout", cout)
     # 0805:train：429405 valid:72055
-    output_file =args.validdatasets+'.tfrecord'
-    cout = make_datasets(path, output_file,tag='valid',nums=args.valid_nums)
+    
+    # cout = make_datasets(path, output_file,tag='valid',nums=args.valid_nums)
 
-    print("valid_cout", cout)
+    print("valid_cout", vcout)
