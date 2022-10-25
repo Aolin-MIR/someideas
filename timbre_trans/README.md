@@ -14,8 +14,12 @@ Expressive Flute SSO-v1.2.sf2
 
 Chris Mandolin-4U-v3.0.sf2
 
-#!/bin/bash
-source ~/.bashrc
-cd /data/state-spaces-main/sashimi/
+
+
+#数据合成
+
 python -u mae_torch_preprocess.py --maestropath=/data/maestro-v3.0.0/ >largedatalog_$(date +%m%d%H%M)
+
+#训练
+
 python -u fast_thoegaze_v4.py --usetrans=0 --batch_size=16 --maxepochs=30 --alpha=0.9 --beta=0.1 --gamma=0 --comment=stftconstfirst --nfft=2048 --segwidth=256 --traindata_path=/common-data/liaolin/traindatasets.tfrecord --validdata_path=/common-data/liaolin/validdatasets.tfrecord --dmodel=512 >trainlog_$(date +%m%d%H%M)
