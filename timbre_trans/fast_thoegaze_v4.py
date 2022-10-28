@@ -26,11 +26,11 @@ from transformers.models.t5.modeling_t5 import T5Stack
 from transformers.models.t5.configuration_t5 import T5Config
 parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.ArgumentDefaultsHelpFormatter)
 
-# parser.add_argument("--background-noise", type=str, default='datasets/speech_commands/train/_background_noise_', help='path of background noise')
+
 parser.add_argument("--comment", type=str, default='', help='comment in tensorboard title')
 parser.add_argument("--traindata_path", type=str, default='/data/traindatasets_small.tfrecord', help='')
 parser.add_argument("--validdata_path", type=str, default='/data/validdatasets_small.tfrecord', help='')
-parser.add_argument("--batch_size", type=int, default=128, help='batch size')
+parser.add_argument("--batch_size", type=int, default=8, help='batch size')
 parser.add_argument("--dataload-workers-nums", type=int, default=4, help='number of workers for dataloader')
 parser.add_argument("--weight-decay", type=float, default=1e-2, help='weight decay')
 parser.add_argument("--optim", choices=['sgd', 'adam'], default='sgd', help='choices of optimization algorithms')
@@ -48,16 +48,16 @@ parser.add_argument("--beta", type=float, default=0.8, help='')
 parser.add_argument("--gamma", type=float, default=0.2, help='')
 parser.add_argument("--train_nums", type=int, default=100000, help='')
 parser.add_argument("--valid_nums", type=int, default=5000, help='')
-# parser.add_argument("--train_nums", type=int, default=64, help='')
-# parser.add_argument("--valid_nums", type=int, default=64, help='')
+
 parser.add_argument("--nfft", type=int, default=2048, help='')
-parser.add_argument("--dmodel", type=int, default=512, help='')
+parser.add_argument("--dmodel", type=int, default=1024, help='')
 parser.add_argument("--layers", type=int, default=6, help='')
 parser.add_argument("--d_layers", type=int, default=6, help='')
 parser.add_argument("--usetrans", type=int, default=1, help='')
 parser.add_argument("--usemaxpool", type=int, default=1, help='')
 parser.add_argument("--nocross", type=int, default=0, help='')
 parser.add_argument("--features", type=str, default='stft', help='')
+parser.add_argument("--vq", type=int, default=1, help='')
 args = parser.parse_args()
 
 class MyConfig(T5Config):
@@ -120,7 +120,44 @@ class CustomTFRecordDataset(TFRecordDataset):
             self.index += 1
             return it
 
+class VQEmbedding(nn.Module):
+
+    def __init__(self, use_codebook_loss=True, axis=-1):
+        super().__init__()
+        self.embedding = nn.Embedding(2048, args.dmodel)
+        self._use_codebook_loss = use_codebook_loss
+        # self._cfg['init'].bind(nn.init.kaiming_uniform_)(self.embedding.weight)
+        self._axis = axis
+
+    def forward(self, input):
+        if self._axis != -1:
+            input = input.transpose(self._axis, -1)
+
+        distances = (torch.sum(input ** 2, axis=-1, keepdim=True)
+                     - 2 * torch.matmul(input, self.embedding.weight.T)
+                     + torch.sum(self.embedding.weight ** 2, axis=-1))
+        ids = torch.argmin(distances, axis=-1)
+        quantized = self.embedding(ids)
+
+        losses = {
+            'commitment': ((quantized.detach() - input) ** 2)
+        }
+        
+        if self._use_codebook_loss:
+            losses['codebook'] = ((quantized - input.detach()) ** 2)
             
+            # Straight-through gradient estimator as in the VQ-VAE paper
+            # No gradient for the codebook
+            quantized = (quantized - input).detach() + input
+        else:
+            # Modified straight-through gradient estimator
+            # The gradient of the result gets copied to both inputs (quantized and non-quantized)
+            quantized = input + quantized - input.detach()
+
+        if self._axis != -1:
+            quantized = quantized.transpose(self._axis, -1).contiguous()
+
+        return quantized, ids, losses            
     
 class LearnableAbsolutePositionEmbedding(nn.Module):
     def __init__(self, max_position_embeddings, hidden_size):
@@ -162,6 +199,8 @@ class Thoegaze(nn.Module):
         if args.features=='melspec':
             n_features=229
         else: n_features=int(args.nfft/2+1)
+        if args.vq:
+            self.vq=VQEmbedding()
         self.embedding = nn.Linear(n_features,self.d_model)
         self.s_encoder = T5Stack(encoder_config)
         self.t_encoder = T5Stack(encoder_config)
@@ -190,6 +229,7 @@ class Thoegaze(nn.Module):
 
         t=[]
         s=[]
+        losses=[]
         if decoder_inputs:
             decoder_inputs=[self._shift_right(di) for di in decoder_inputs]
         transcription_out=[]
@@ -200,12 +240,15 @@ class Thoegaze(nn.Module):
             x = self.pos_emb(x)
             # x=self.relu(x)
             _s= self.s_encoder(inputs_embeds=x)[0]
+            if args.vq:
+                _s,_,l=self.vq(_s)
+                losses.append(l)
             _t = self.t_encoder(inputs_embeds=x)[0]
             if self.use_max_pooling:
                 _t=self.max_pool(_t)
             else:
                 _t=torch.mean(_t,1)
-                _t=torch.squeeze(
+                _t=torch.unsqueeze(
                     _t,1)
 
             t.append(_t)
@@ -241,32 +284,37 @@ class Thoegaze(nn.Module):
             y3= self.decoder(inputs_embeds=s[3]+t[2])[0]
 
         else:
-            y0= self.decoder(inputs_embeds=s[2]+t[1])[0]
-            y1= self.decoder(inputs_embeds=s[3]+t[0])[0]
-            y2= self.decoder(inputs_embeds=s[0]+t[3])[0]
-            y3= self.decoder(inputs_embeds=s[1]+t[2])[0]
-            y0_= self.out(self.decoder(inputs_embeds=s[0]+t[1])[0])
-            y1_= self.out(self.decoder(inputs_embeds=s[1]+t[0])[0])
-            y2_= self.out(self.decoder(inputs_embeds=s[2]+t[3])[0])
-            y3_= self.out(self.decoder(inputs_embeds=s[3]+t[2])[0])
+            # y0= self.decoder(inputs_embeds=s[2]+t[1])[0]
+            # y1= self.decoder(inputs_embeds=s[3]+t[0])[0]
+            # y2= self.decoder(inputs_embeds=s[0]+t[3])[0]
+            # y3= self.decoder(inputs_embeds=s[1]+t[2])[0]
+            y0= self.decoder(inputs_embeds=s[0]+t[1])[0]
+            y1= self.decoder(inputs_embeds=s[1]+t[0])[0]
+            y2= self.decoder(inputs_embeds=s[2]+t[3])[0]
+            y3= self.decoder(inputs_embeds=s[3]+t[2])[0]
+            y0_= self.out(self.decoder(inputs_embeds=s[2]+t[1])[0])
+            y1_= self.out(self.decoder(inputs_embeds=s[3]+t[0])[0])
+            y2_= self.out(self.decoder(inputs_embeds=s[0]+t[3])[0])
+            y3_= self.out(self.decoder(inputs_embeds=s[1]+t[2])[0])
 
         
         y0=self.out(y0)
         y1=self.out(y1)
         y2=self.out(y2)
         y3=self.out(y3)
+        out=[y0,y1,y2,y3]
+        if not args.nocross:
+            out+=[y0_,y1_,y2_,y3_]
 
+        
         if self.use_transcription_loss:
-            if args.nocross:
-                return [y0,y1,y2,y3]+transcription_out+t
-            else:
-                return [y0,y1,y2,y3]+[y0_,y1_,y2_,y3_]+transcription_out+t
-        else:
-            if args.nocross:
-                return [y0,y1,y2,y3]+t # required to return a state
-            else:
-                return [y0,y1,y2,y3]+[y0_,y1_,y2_,y3_]+t
 
+                out+=transcription_out
+
+        out+=t
+        if args.vq:
+            out+=losses
+        return out 
     def _shift_right(self, input_ids):
         decoder_start_token_id = 1
         pad_token_id = 0
@@ -288,8 +336,26 @@ class Thoegaze(nn.Module):
         return shifted_input_ids
 
 
-def criterion(outputs,inputs,score=None,alpha=0.5,beta=1,gamma=1):
+def criterion(outputs,inputs,score=None,alpha=0.5,beta=1,gamma=1,step=None):
+    loss={}
+    para={}
     
+    # beta_s = 1
+    # beta_s_anneal_start = 0
+    # beta_s_anneal_steps = 0
+    # if step is not None:
+    #     if beta_s_anneal_steps == 0:
+    #         beta_s = 0. if step < beta_s_anneal_start else beta_s
+    #     else:
+    #         beta_s *= min(1., max(0., (step - beta_s_anneal_start) / beta_s_anneal_steps))
+    if args.vq:
+        ls=outputs[-4:]
+        outputs=outputs[:-4]
+        para['commitment'] = 0.5
+        para['codebook'] = 1
+        loss['commitment']=sum([x['commitment'] for x in ls]).mean()
+        loss['codebook']=sum([x['codebook'] for x in ls]).mean()
+       
     if score:
         if args.nocross:
             y1,y2,y3,y4,_s1,_s2,_s3,_s4,t1,t2,t3,t4=outputs
@@ -304,8 +370,8 @@ def criterion(outputs,inputs,score=None,alpha=0.5,beta=1,gamma=1):
         # print(271,sa.size())
         sfn = torch.nn.CrossEntropyLoss(size_average=True,reduce=True,ignore_index=0)
 
-        
-        loss_transcription = sfn(torch.transpose(_s1, -2, -1),sa) + sfn(torch.transpose(_s3, -2, -1),sa) +sfn(torch.transpose(_s2, -2, -1),sb)+ sfn(torch.transpose(_s4, -2, -1),sb)
+        para['transcription']=gamma
+        loss['transcription'] = sfn(torch.transpose(_s1, -2, -1),sa) + sfn(torch.transpose(_s3, -2, -1),sa) +sfn(torch.transpose(_s2, -2, -1),sb)+ sfn(torch.transpose(_s4, -2, -1),sb)
 
     else:
         if args.nocross:
@@ -316,25 +382,21 @@ def criterion(outputs,inputs,score=None,alpha=0.5,beta=1,gamma=1):
 
     x1,x2,x3,x4=inputs
     fn=torch.nn.MSELoss()
-    # loss_s=fn(s1,s3)+fn(s2,s4) 
-    loss_t=0#fn(t1,t2)+fn(t3,t4)
-    if args.nocross:
-        loss_syth=fn(x1,y1)+fn(x2,y2)+fn(x3,y3)+fn(x4,y4)
-        if score:
-            return beta*loss_syth+gamma*loss_transcription,loss_transcription,loss_syth,loss_t
-        else:
-            return  beta*loss_syth,loss_syth,loss_t        
-    else:
+
+    para['syth']=alpha
+    loss['syth']=fn(x1,y1)+fn(x2,y2)+fn(x3,y3)+fn(x4,y4)
+
+    if not args.nocross:
+
         triplet_loss = nn.TripletMarginLoss(margin=1.0, p=2)
-        loss_syth=fn(x1,y1)+fn(x2,y2)+fn(x3,y3)+fn(x4,y4)#+fn(y1,y1_)+fn(y2,y2_)+fn(y3,y3_)+fn(y4,y4_)
-        loss_t= triplet_loss(y1_,y1,y2)+triplet_loss(y2_,y2,y1)+triplet_loss(y3_,y3,y4)+triplet_loss(y4_,y4,y3)+triplet_loss(y1_,y1,y3)+triplet_loss(y2_,y2,y4)+triplet_loss(y3_,y3,y1)+triplet_loss(y4_,y4,y1)
+        para['const']=beta
+        loss['const']= triplet_loss(y1_,y1,y2)+triplet_loss(y2_,y2,y1)+triplet_loss(y3_,y3,y4)+triplet_loss(y4_,y4,y3)+triplet_loss(y1_,y1,y3)+triplet_loss(y2_,y2,y4)+triplet_loss(y3_,y3,y1)+triplet_loss(y4_,y4,y1)
         # loss_syth+=loss_t
 
-        if score:
-            return alpha*loss_t+beta*loss_syth+gamma*loss_transcription,loss_transcription,loss_syth,loss_t
-        else:
-            return  alpha*loss_t+beta*loss_syth,loss_syth,loss_t
+    loss['total'] = sum(para[name]*loss for name, loss in loss.items()
+                      )
 
+    return loss
 
 def note_f1_v3(outputs,sa,sb):
     '''Calculate note-F1 score.  
@@ -422,7 +484,7 @@ def train(epoch):
 
     model.train()  # Set model to training mode
 
-    running_loss,running_loss_t,running_loss_s,running_loss_trans,running_loss_syth = 0.0, 0.0, 0.0, 0.0,0.0
+    running_loss,running_loss_t,running_loss_codebook,running_loss_trans,running_loss_syth,running_loss_commitment = 0.0,0.0, 0.0, 0.0, 0.0,0.0
     it = 0
     total_it=args.train_nums//train_dataloader.batch_size
 
@@ -453,31 +515,38 @@ def train(epoch):
         if args.usetrans:
 
             outputs = model([x0,x1,x2,x3],[t0,t1])
-            loss,loss_trans,loss_syth ,loss_t= criterion(outputs, [x0,x1,x2,x3],[t0,t1],alpha=args.alpha,beta=args.beta,gamma=args.gamma)
+            loss= criterion(outputs, [x0,x1,x2,x3],[t0,t1],alpha=args.alpha,beta=args.beta,gamma=args.gamma)
         else:
 
             outputs = model([x0,x1,x2,x3])
-            loss , loss_syth ,loss_t= criterion(outputs, [x0,x1,x2,x3],None,alpha=args.alpha,beta=args.beta,gamma=args.gamma)
+            loss= criterion(outputs, [x0,x1,x2,x3],None,alpha=args.alpha,beta=args.beta,gamma=args.gamma)
         optimizer.zero_grad()
-        loss.backward()
+
+        loss['total'].backward()
         optimizer.step()
 
         # statistics
         it += 1
         global_step += 1
-        running_loss += loss.item()
-        running_loss_t += loss_t.item()
+        running_loss += loss['total'].item()
+        running_loss_t += loss['const'].item()
+        if args.vq:
+            running_loss_commitment += loss['commitment'].item()
+            running_loss_codebook += loss['codebook'].item()
+            
         if args.usetrans:
-            running_loss_trans += loss_trans.item()
+            running_loss_trans += loss['trans'].item()
 
-        running_loss_syth += loss_syth.item()
+        running_loss_syth += loss['syth'].item()
         if it%1000==0:
             print({'epoch':str(epoch+1),
                 'train_loss': "%.05f" % (running_loss / it),
-                # 'loss_s': "%.05f" % (running_loss_s / it),
+                'loss_commitment': "%.05f" % (running_loss_commitment / it),
+                                'loss_codebook': "%.05f" % (running_loss_codebook / it),
                 'loss_const': "%.05f" % (running_loss_t / it),
                 'loss_trans': "%.05f" % (running_loss_trans / it),
                 'loss_syth': "%.05f" % (running_loss_syth / it),
+                
                         # '系统总计内存':"%.05f" % zj,
     #    '系统已经使用内存':"%.05f" % ysy,
     #     '系统空闲内存':"%.05f" % kx,
@@ -534,20 +603,20 @@ def valid(epoch):
         # forward/backward
         if args.usetrans:
             outputs = model([x0,x1,x2,x3],[t0,t1])
-            loss,loss_trans,loss_syth,loss_t = criterion(outputs, [x0,x1,x2,x3],[t0,t1],alpha=args.alpha,beta=args.beta,gamma=args.gamma)
+            loss = criterion(outputs, [x0,x1,x2,x3],[t0,t1],alpha=args.alpha,beta=args.beta,gamma=args.gamma)
         else:
             outputs = model([x0,x1,x2,x3])
-            loss,loss_syth,loss_t = criterion(outputs, [x0,x1,x2,x3],None,alpha=args.alpha,beta=args.beta,gamma=args.gamma)
+            loss= criterion(outputs, [x0,x1,x2,x3],None,alpha=args.alpha,beta=args.beta,gamma=args.gamma)
         it += 1
         global_step += 1
-        running_loss += loss.item()
+        running_loss += loss['total'].item()
         # running_loss_s += loss_s
-        running_loss_t += loss_t.item()
+        running_loss_t += loss['const'].item()
         
-        running_loss_syth += loss_syth.item()
+        running_loss_syth += loss['syth'].item()
     #加速noteF1的计算
         if args.usetrans:
-            running_loss_trans += loss_trans.item()
+            running_loss_trans += loss['trans'].item()
             metric=note_f1_v3(outputs,t0,t1)
             # statistics
 
@@ -572,20 +641,20 @@ def valid(epoch):
         # print('系统已经使用内存:%d.3GB' % ysy)
         # print('系统空闲内存:%d.3GB' % kx)
         # update the progress bar
-        if it%300==0:
-            # pbar.set_postfix(
-            print({
-                'valid_loss': "%.05f" % (running_loss / it),
-                # 'loss_s': "%.05f" % (running_loss_s / it),
-                'loss_const': "%.05f" % (running_loss_t / it),
-                'loss_trans': "%.05f" % (running_loss_trans / it),
-                'loss_syth': "%.05f" % (running_loss_syth / it),
-                'note_f1':"%.05f" % (nf1),
-            # '系统总计内存':"%.05f" % zj,
-    #    '系统已经使用内存':"%.05f" % ysy,
-    #     '系统空闲内存':"%.05f" % kx,
-    #     '本进程占用内存(MB)':"%.05f" % (bj),
-        })
+    #     if it%300==0:
+    #         # pbar.set_postfix(
+    #         print({
+    #             'valid_loss': "%.05f" % (running_loss / it),
+    #             # 'loss_s': "%.05f" % (running_loss_s / it),
+    #             'loss_const': "%.05f" % (running_loss_t / it),
+    #             'loss_trans': "%.05f" % (running_loss_trans / it),
+    #             'loss_syth': "%.05f" % (running_loss_syth / it),
+    #             'note_f1':"%.05f" % (nf1),
+    #         # '系统总计内存':"%.05f" % zj,
+    # #    '系统已经使用内存':"%.05f" % ysy,
+    # #     '系统空闲内存':"%.05f" % kx,
+    # #     '本进程占用内存(MB)':"%.05f" % (bj),
+    #     })
 
         # print('本进程占用内存(MB)%.05f' % (bj))
     # accuracy = correct/total
