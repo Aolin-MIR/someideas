@@ -24,13 +24,13 @@ from tfrecord import reader
 from tfrecord import iterator_utils
 from transformers.models.t5.modeling_t5 import T5Stack
 from transformers.models.t5.configuration_t5 import T5Config
+from fast_thoegaze_v4 import VQEmbedding,MyConfig,LearnableAbsolutePositionEmbedding,CustomTFRecordDataset
 parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.ArgumentDefaultsHelpFormatter)
 
 # parser.add_argument("--background-noise", type=str, default='datasets/speech_commands/train/_background_noise_', help='path of background noise')
 parser.add_argument("--comment", type=str, default='', help='comment in tensorboard title')
-parser.add_argument("--traindata_path", type=str, default='/data/traindatasets_small.tfrecord', help='')
-parser.add_argument("--validdata_path", type=str, default='/data/validdatasets_small.tfrecord', help='')
-parser.add_argument("--batch_size", type=int, default=128, help='batch size')
+
+parser.add_argument("--batch_size", type=int, default=16, help='batch size')
 parser.add_argument("--dataload-workers-nums", type=int, default=4, help='number of workers for dataloader')
 parser.add_argument("--weight-decay", type=float, default=1e-2, help='weight decay')
 parser.add_argument("--optim", choices=['sgd', 'adam'], default='sgd', help='choices of optimization algorithms')
@@ -42,22 +42,20 @@ parser.add_argument("--lr-scheduler-gamma", type=float, default=0.1, help='learn
 parser.add_argument("--max-epochs", type=int, default=60, help='max number of epochs')
 parser.add_argument("--resume", type=str, help='checkpoint file to resume')
 parser.add_argument("--segwidth", type=int, default=256, help='')
-parser.add_argument("--dropout", type=float, default=0.1, help='dropout rate')
+parser.add_argument("--dropout", type=float, default=0.0, help='dropout rate')
 parser.add_argument("--alpha", type=float, default=0.5, help='')
 parser.add_argument("--beta", type=float, default=0.8, help='')
 parser.add_argument("--gamma", type=float, default=0.2, help='')
-parser.add_argument("--train_nums", type=int, default=429405, help='')
-parser.add_argument("--valid_nums", type=int, default=72055, help='')
-# parser.add_argument("--train_nums", type=int, default=64, help='')
-# parser.add_argument("--valid_nums", type=int, default=64, help='')
+
 parser.add_argument("--nfft", type=int, default=2048, help='')
 parser.add_argument("--sr", type=int, default=22050, help='')
-parser.add_argument("--dmodel", type=int, default=512, help='')
+parser.add_argument("--dmodel", type=int, default=1024, help='')
 parser.add_argument("--layers", type=int, default=6, help='')
 parser.add_argument("--d_layers", type=int, default=6, help='')
-parser.add_argument("--usetrans", type=int, default=1, help='')
+parser.add_argument("--usetrans", type=int, default=0, help='')
 parser.add_argument("--usemaxpool", type=int, default=1, help='')
-parser.add_argument("--features", type=str, default='melspec', help='')
+parser.add_argument("--features", type=str, default='stft', help='')
+parser.add_argument("--vq", type=int, default=1, help='')
 args = parser.parse_args()
 sr = args.sr # Sample rate.
 n_fft = args.nfft # fft points (samples)
@@ -72,18 +70,7 @@ preemphasis = .97 # or None
 max_db = 100
 ref_db = 20
 top_db = 15
-class MyConfig(T5Config):
-    def __init__(self,
-                 use_dense=False,
-                 use_position_embed=True,
-                 input_length=None,
-                 **kwargs
-                 ):
-        self.use_dense = use_dense
-        self.use_position_embed = use_position_embed
-        self.input_length = input_length
-        super().__init__(
-            **kwargs)
+
 
 config = MyConfig(vocab_size=91+args.segwidth, input_length=args.segwidth, use_position_embed=True, return_dict=False,use_dense=False, d_model=args.dmodel, d_kv=64, d_ff=1024, num_layers=args.layers, num_decoder_layers=None, num_heads=8, relative_attention_num_buckets=32, dropout_rate=args.dropout,
                   layer_norm_epsilon=1e-06, initializer_factor=1.0, feed_forward_proj='relu', is_encoder_decoder=True, use_cache=False,
@@ -92,72 +79,11 @@ config = MyConfig(vocab_size=91+args.segwidth, input_length=args.segwidth, use_p
                    eos_token_id=2, 
                 decoder_start_token_id=1)
 
-class CustomTFRecordDataset(TFRecordDataset):
-    def __init__(self, data_path,
-                 index_path,
-                 description=None,
-                 shuffle_queue_size=None,
-                 transform=None,
-                 sequence_description=None,
-                 compression_type=None,
-                 length=None,
-                 ):
-        super(CustomTFRecordDataset, self).__init__(data_path,
-                 index_path,
-                 description,
-                 shuffle_queue_size,
-                 transform,
-                 sequence_description,
-                 compression_type)
-        # self.length=length
-        self.max_samples = length
-        self.index = 0
 
-    def __iter__(self):
-        while self.index < self.max_samples:
-            worker_info = torch.utils.data.get_worker_info()
-            if worker_info is not None:
-                shard = worker_info.id, worker_info.num_workers
-                np.random.seed(worker_info.seed % np.iinfo(np.uint32).max)
-            else:
-                shard = None
-            it = reader.tfrecord_loader(data_path=self.data_path,
-                                        index_path=self.index_path,
-                                        description=self.description,
-                                        shard=shard,
-                                        sequence_description=self.sequence_description,
-                                        compression_type=self.compression_type)
-            if self.shuffle_queue_size:
-                it = iterator_utils.shuffle_iterator(it, self.shuffle_queue_size)
-            if self.transform:
-                it = map(self.transform, it)
-            self.index += 1
-            return it
 
             
     
-class LearnableAbsolutePositionEmbedding(nn.Module):
-    def __init__(self, max_position_embeddings, hidden_size):
-        super().__init__()
-        self.is_absolute = True
-        self.embeddings = nn.Embedding(max_position_embeddings, hidden_size)
-        self.register_buffer('position_ids', torch.arange(max_position_embeddings))
 
-    def forward(self, x):
-        """
-        return (b l d) / (b h l d)
-        """
-        position_ids = self.position_ids[:x.size(-2)]
-
-        if x.dim() == 3:
-            return x + self.embeddings(position_ids)[None, :, :]
-
-        elif x.dim() == 4:
-            h = x.size(1)
-            x = rearrange(x, 'b h l d -> b l (h d)')
-            x = x + self.embeddings(position_ids)[None, :, :]
-            x = rearrange(x, 'b l (h d) -> b h l d', h=h)
-            return x
 
 
 class Thoegaze(nn.Module):
@@ -198,7 +124,8 @@ class Thoegaze(nn.Module):
         self.pos_emb = LearnableAbsolutePositionEmbedding(args.segwidth, d_model
             )
         self.s_decoder= T5Stack(s_decoder_config,embed_tokens=self.tgt_emb)
-
+        if args.vq:
+            self.vq=VQEmbedding()
     def forward(self, content=None,timbre=None,decoder_inputs=None, state=None,type='syth'):
 
 
@@ -212,6 +139,10 @@ class Thoegaze(nn.Module):
 
             content = self.pos_emb(content)
             _s= self.s_encoder(inputs_embeds=content)[0]
+            if args.vq:
+                _s,_,_=self.vq(_s)
+                # losses.append(l)
+
         # x=self.relu(x)
         else:
 
@@ -394,10 +325,11 @@ def predict(content,timbre):
     spec=None
     specs=[]
     while i< len(content):
-        out = model(content=content[i:i+args.batch_size,:,:],timbre=_timbre)
+        outs = model(content=content[i:i+args.batch_size,:,:],timbre=_timbre)
         i+=args.batch_size
-        out=torch.reshape(out,(-1,out.size()[-1]))
-        specs.append(out)
+        # out=torch.reshape(outs,(-1,out.size()[-1]))
+        for out in outs:
+            specs.append(out)
         # if not spec==None:
         #     spec=torch.cat((spec,out),0)
         # else:
@@ -448,6 +380,7 @@ instruments = {
     'flute':('Expressive Flute SSO-v1.2.sf2',''),
     'mandolin':('Chris Mandolin-4U-v3.0.sf2','Full Exp Mandolin'),
 }
+
 if __name__=="__main__":
 
     use_gpu = torch.cuda.is_available()
@@ -458,9 +391,9 @@ if __name__=="__main__":
     # print('alpha',args.alpha,'beta',args.beta,'gamma',args.gamma)
     # model=Thoegaze(d_model=args.dmodel,use_transcription_loss=False,use_max_pooling=args.usemaxpool)
     if use_gpu:
-        model=torch.load('checkpoints/thoagazer_s4_sgd_plateau_bs8_lr5.0e-05_wd1.0e-02_contrastive-best-los-tt.pth')
+        model=torch.load("/data/state-spaces-main/sashimi/checkpoints/thoagazer_s4_sgd_plateau_bs8_lr5.0e-05_wd1.0e-02_vqstftconst-best-const-los-tt.pth")
     else:
-        model=torch.load('checkpoints/thoagazer_s4_sgd_plateau_bs8_lr5.0e-05_wd1.0e-02_contrastive-best-los-tt.pth',map_location=torch.device('cpu'))
+        model=torch.load("/data/state-spaces-main/sashimi/checkpoints/thoagazer_s4_sgd_plateau_bs8_lr5.0e-05_wd1.0e-02_vqstftconst-best-const-los-tt.pth",map_location=torch.device('cpu'))
     # print(type(model),418)
     if isinstance(model,torch.nn.DataParallel):
         model = model.module
@@ -482,6 +415,6 @@ if __name__=="__main__":
     timbre=renderMidi( midi_timbre, select_midi_soundfont(*instruments[instrument_timbre]),instrument_timbre,return_file_path=True)
     # predict()
     # print(content,timbre)
-    test(timbre,timbre)
+    predict(content,timbre)
 
 
