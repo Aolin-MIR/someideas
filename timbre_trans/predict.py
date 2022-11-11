@@ -53,9 +53,10 @@ parser.add_argument("--dmodel", type=int, default=1024, help='')
 parser.add_argument("--layers", type=int, default=6, help='')
 parser.add_argument("--d_layers", type=int, default=6, help='')
 parser.add_argument("--usetrans", type=int, default=0, help='')
-parser.add_argument("--usemaxpool", type=int, default=1, help='')
+parser.add_argument("--pooling_type", type=str, default='max', help='')
 parser.add_argument("--features", type=str, default='stft', help='')
 parser.add_argument("--vq", type=int, default=1, help='')
+parser.add_argument("--auto_regrssion_decoder", type=int, default=1, help='')
 args = parser.parse_args()
 sr = args.sr # Sample rate.
 n_fft = args.nfft # fft points (samples)
@@ -92,7 +93,7 @@ class Thoegaze(nn.Module):
         d_layers=args.d_layers, 
         unet=False,
         use_transcription_loss=True,
-        use_max_pooling=False
+        # pooling_type='gru'
     ):
         super().__init__()
         self.d_model  = d_model
@@ -105,16 +106,26 @@ class Thoegaze(nn.Module):
         self.embedding = nn.Linear(n_features,self.d_model)
         self.s_encoder = T5Stack(encoder_config)
         self.t_encoder = T5Stack(encoder_config)
-        self.decoder=T5Stack(encoder_config)
+        if args.auto_regrssion_decoder:
+            decoder_config = copy.deepcopy(config)
+            decoder_config.is_decoder = True
+            decoder_config.is_encoder_decoder = False   
+            self.decoder=T5Stack(decoder_config)
+  
+
+        else:
+            self.decoder=T5Stack(encoder_config)
         s_decoder_config = copy.deepcopy(config)
         s_decoder_config.is_decoder = True
         s_decoder_config.is_encoder_decoder = False   
         s_decoder_config.input_length=int(args.segwidth*1.5) 
         s_decoder_config.num_layers = d_layers
-      
-        self.use_max_pooling=use_max_pooling
-        if self.use_max_pooling:
+        self.pooling_type=args.pooling_type
+        if self.pooling_type=='max':
            self.max_pool=nn.MaxPool2d((args.segwidth,1)) 
+        elif self.pooling_type=='gru':
+           self.gru=nn.GRU(self.d_model,self.d_model,2,bidirectional=True,dropout=0.0,batch_first=True)       
+
         self.linear = nn.Linear(self.d_model, 91+args.segwidth)
         # self.m = nn.Softmax(dim=-1)
         # self.relu = nn.ReLU()
@@ -126,7 +137,7 @@ class Thoegaze(nn.Module):
         self.s_decoder= T5Stack(s_decoder_config,embed_tokens=self.tgt_emb)
         if args.vq:
             self.vq=VQEmbedding()
-    def forward(self, content=None,timbre=None,decoder_inputs=None, state=None,type='syth'):
+    def forward(self, content=None,timbre=None,decoder_inputs=None, state=None,type='syth',h0=None):
 
 
         if decoder_inputs:
@@ -149,16 +160,33 @@ class Thoegaze(nn.Module):
             timbre=self.embedding(timbre)
             timbre = self.pos_emb(timbre)
             _t = self.t_encoder(inputs_embeds=timbre)[0]
+            if self.pooling_type=='gru':
+                _,h0=self.gru(_t,h0)
+                _t=h0[-1]
+                _t=torch.unsqueeze(
+                    _t,1)
+            return _t,h0
 
-            return _t
 
 
 
 
 
+        if args.auto_regrssion_decoder:
+            bs,sl,hs=content.size()
+            ie=torch.zeros((bs,sl,hs))
+            for i in range(1,sl):
+                am=nn.functional.pad(torch.ones((bs,i)),(0,sl-i,0,0),'constant',value=0)
 
+                y0= self.decoder(inputs_embeds=ie,attention_mask=am,encoder_hidden_states=_s+_t)[0]
 
+                ie[:,i,:]=y0[:,i-1,:]
+               
+                
+            y0=self.decoder(inputs_embeds=ie,encoder_hidden_states=_s+_t)[0]
+            y0=torch.cat((ie[:,1:,:],y0[:,sl-1,:]),dim=1)
         y0= self.decoder(inputs_embeds=_s+_t)[0]
+        
 
 
 
@@ -259,7 +287,7 @@ def invert_spectrogram(spectrogram):
     spectrogram: [f, t]
     '''
     return librosa.istft(stft_matrix=spectrogram, hop_length=hop_length, win_length=args.nfft, window="hann")
-def get_wav(spectr,name='test.wav'):
+def get_wav(spectr,name='test.wav',N=500):
     # spectr = torchfile.load(S)
     spectr=spectr.transpose(-1,-2)
     S = np.zeros([int(args.nfft / 2) + 1, spectr.shape[1]])
@@ -282,7 +310,7 @@ def get_wav(spectr,name='test.wav'):
 
     random_phase = S.copy()
     np.random.shuffle(random_phase)
-    p = phase_restore((np.exp(S) - 1), random_phase, N=500)
+    p = phase_restore((np.exp(S) - 1), random_phase, N)
 
     # ISTFT
     y = librosa.istft(stft_matrix=(np.exp(S) - 1) * p,hop_length=int(args.sr/32))
@@ -302,24 +330,27 @@ def predict(content,timbre):
         # forward/backward
     i=0
     _timbre=None
+    ht=None
     while i< len(timbre):
         
-        _t = model(timbre=timbre[i:i+args.batch_size,:,:],type='timbre')
+        _t,ht = model(timbre=timbre[i:i+args.batch_size,:,:],type='timbre',h0=ht)
         i+=args.batch_size
         _t=torch.reshape(_t,(-1,_t.size()[-1]))
-        if args.usemaxpool:
+        if args.pooling_type=='max':
             _t,_=torch.max(_t,0)
             if not _timbre==None:
                 _timbre=torch.stack([_t,_timbre])
                 _timbre,_=torch.max(_timbre,0)
             else:
                 _timbre=_t
+        elif args.pooling_type=='gru':
+            _timbre=_t
         else:
             if not _timbre==None:
                 _timbre=torch.cat((_timbre,_t),0)
             else:
                 _timbre=_t
-    if not args.usemaxpool:
+    if not args.pooling_type:
         _timbre=torch.mean(_timbre[:-tpl,:],0)   
     i=0
     spec=None
@@ -338,7 +369,7 @@ def predict(content,timbre):
     # spec=spec[:-cpl,:]
     #2wav
     for i, spec in enumerate(specs):
-        get_wav(spec,str(i)+'.wav')
+        get_wav(spec,str(i)+'.wav',200)
     # librosa.output.write_wav("gg_stft.wav", wav, sr)
     # sf.write('test.wav', wav, 25600, 'PCM_24')
     # librosa.output.write_wav("test.wav", wav, sr)
@@ -389,7 +420,7 @@ if __name__=="__main__":
     if use_gpu:
         torch.backends.cudnn.benchmark = True
     # print('alpha',args.alpha,'beta',args.beta,'gamma',args.gamma)
-    # model=Thoegaze(d_model=args.dmodel,use_transcription_loss=False,use_max_pooling=args.usemaxpool)
+    # model=Thoegaze(d_model=args.dmodel,use_transcription_loss=False,use_max_pooling=args.pooling_type)
     if use_gpu:
         model=torch.load("/data/state-spaces-main/sashimi/checkpoints/thoagazer_s4_sgd_plateau_bs8_lr5.0e-05_wd1.0e-02_vqstftconst-best-const-los-tt.pth")
     else:
