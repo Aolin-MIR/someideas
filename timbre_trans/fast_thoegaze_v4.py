@@ -1,3 +1,4 @@
+from unicodedata import bidirectional
 import warnings
 warnings.filterwarnings("ignore", category=UserWarning)
 import gc
@@ -5,20 +6,15 @@ import os
 from einops import rearrange 
 import torch
 import copy
-
-
 import argparse
 import time
 import torch.nn as nn
-
 from tqdm.auto import tqdm
 from tensorboardX import SummaryWriter
 from torch.utils.data import DataLoader
 # from torch.utils.data.sampler import WeightedRandomSampler
-
 import numpy as np
 from tfrecord.torch.dataset import TFRecordDataset
-
 import torch.nn.functional as F
 from tfrecord import reader
 from tfrecord import iterator_utils
@@ -54,10 +50,11 @@ parser.add_argument("--dmodel", type=int, default=1024, help='')
 parser.add_argument("--layers", type=int, default=6, help='')
 parser.add_argument("--d_layers", type=int, default=6, help='')
 parser.add_argument("--usetrans", type=int, default=1, help='')
-parser.add_argument("--usemaxpool", type=int, default=1, help='')
+parser.add_argument("--pooling_type", type=str, default='gru', help='')
 parser.add_argument("--nocross", type=int, default=0, help='')
 parser.add_argument("--features", type=str, default='stft', help='')
 parser.add_argument("--vq", type=int, default=1, help='')
+parser.add_argument("--auto_regrssion_decoder", type=int, default=1, help='')
 args = parser.parse_args()
 
 class MyConfig(T5Config):
@@ -77,6 +74,7 @@ config = MyConfig(vocab_size=91+args.segwidth, input_length=args.segwidth, use_p
                   layer_norm_epsilon=1e-06, initializer_factor=1.0, feed_forward_proj='relu', is_encoder_decoder=True, use_cache=False,
                   bos_token_id=1,
                   pad_token_id=0, eos_token_id=2, decoder_start_token_id=1)
+
 
 class CustomTFRecordDataset(TFRecordDataset):
     def __init__(self, data_path,
@@ -189,7 +187,7 @@ class Thoegaze(nn.Module):
         d_layers=args.d_layers, 
         unet=False,
         use_transcription_loss=True,
-        use_max_pooling=False
+        # pooling_type='gru'
     ):
         super().__init__()
         self.d_model  = d_model
@@ -204,20 +202,35 @@ class Thoegaze(nn.Module):
         self.embedding = nn.Linear(n_features,self.d_model)
         self.s_encoder = T5Stack(encoder_config)
         self.t_encoder = T5Stack(encoder_config)
-        self.decoder=T5Stack(encoder_config)
+        # decoder_config = copy.deepcopy(config)
+        # decoder_config.is_decoder = True
+        # decoder_config.is_encoder_decoder = False   
+        # decoder_config.input_length=int(args.segwidth*1.5) 
+        # decoder_config.num_layers = d_layers 
+        if args.auto_regrssion_decoder:
+            decoder_config = copy.deepcopy(config)
+            decoder_config.is_decoder = True
+            decoder_config.is_encoder_decoder = False   
+            self.decoder=T5Stack(decoder_config)
+  
+
+        else:
+            self.decoder=T5Stack(encoder_config)
+
         s_decoder_config = copy.deepcopy(config)
         s_decoder_config.is_decoder = True
         s_decoder_config.is_encoder_decoder = False   
         s_decoder_config.input_length=int(args.segwidth*1.5) 
         s_decoder_config.num_layers = d_layers
-        self.use_max_pooling=use_max_pooling
-        if self.use_max_pooling:
+        self.pooling_type=args.pooling_type
+        if self.pooling_type=='max':
            self.max_pool=nn.MaxPool2d((args.segwidth,1)) 
-
+        elif self.pooling_type=='gru':
+           self.gru=nn.GRU(self.d_model,self.d_model,2,bidirectional=True,dropout=args.dropout,batch_first=True) 
         self.linear = nn.Linear(self.d_model, 91+args.segwidth)
         # self.m = nn.Softmax(dim=-1)
         # self.relu = nn.ReLU()
-
+        # self.dropout=nn.Dropout(p=args.dropout)
         self.out =nn.Linear(self.d_model, n_features)
 
         self.tgt_emb = nn.Embedding(args.segwidth+91, d_model)
@@ -230,6 +243,7 @@ class Thoegaze(nn.Module):
         t=[]
         s=[]
         losses=[]
+        d_x_list=[]
         if decoder_inputs:
             decoder_inputs=[self._shift_right(di) for di in decoder_inputs]
         transcription_out=[]
@@ -238,14 +252,20 @@ class Thoegaze(nn.Module):
             x=self.embedding(x)
 
             x = self.pos_emb(x)
-            # x=self.relu(x)
-            _s= self.s_encoder(inputs_embeds=x)[0]
+
+            d_x_list.append(x)
+            _s= self.s_encoder(inputs_embeds=x,return_dict=True).last_hidden_state
             if args.vq:
                 _s,_,l=self.vq(_s)
                 losses.append(l)
-            _t = self.t_encoder(inputs_embeds=x)[0]
-            if self.use_max_pooling:
+            _t = self.t_encoder(inputs_embeds=x,return_dict=True).last_hidden_state
+            if self.pooling_type=='max':
                 _t=self.max_pool(_t)
+            elif self.pooling_type=='gru':
+                _,ht=self.gru(_t)
+                _t=ht[-1]
+                _t=torch.unsqueeze(
+                    _t,1)
             else:
                 _t=torch.mean(_t,1)
                 _t=torch.unsqueeze(
@@ -273,29 +293,45 @@ class Thoegaze(nn.Module):
                 if use_gpu:
                     mem_mask=mem_mask.cuda()
                 _s=nn.functional.pad(_s,(0,0,0,int(ss/2),0,0),'constant',value=0)  
-                transcription_out.append(self.linear(self.s_decoder(input_ids=decoder_input,encoder_hidden_states=_s,encoder_attention_mask=mem_mask,use_cache=True
-                )[0]))
+                transcription_out.append(self.linear(self.s_decoder(input_ids=decoder_input,encoder_hidden_states=_s,encoder_attention_mask=mem_mask,use_cache=True,return_dict=True
+                ).last_hidden_state))
 
+        if args.auto_regrssion_decoder:
+            d_x_list=[nn.functional.pad(x[:,:-1,:],(0,0,1,0,0,0),'constant',value=0) for x in d_x_list]
+            
+            y0= self.decoder(inputs_embeds=d_x_list[0],encoder_hidden_states=s[0]+t[1],return_dict=True).last_hidden_state
+            y1= self.decoder(inputs_embeds=d_x_list[1],encoder_hidden_states=s[1]+t[0],return_dict=True).last_hidden_state
+            y2= self.decoder(inputs_embeds=d_x_list[2],encoder_hidden_states=s[2]+t[3],return_dict=True).last_hidden_state
+            y3= self.decoder(inputs_embeds=d_x_list[3],encoder_hidden_states=s[3]+t[2],return_dict=True).last_hidden_state
 
-        if args.nocross:
-            y0= self.decoder(inputs_embeds=s[0]+t[1])[0]
-            y1= self.decoder(inputs_embeds=s[1]+t[0])[0]
-            y2= self.decoder(inputs_embeds=s[2]+t[3])[0]
-            y3= self.decoder(inputs_embeds=s[3]+t[2])[0]
+            if not args.nocross:
+                # y0= self.decoder(inputs_embeds=d_x_list[],encoder_hidden_states=s[2]+t[1])[0]
+                # y1= self.decoder(inputs_embeds=d_x_list[],encoder_hidden_states=s[3]+t[0])[0]
+                # y2= self.decoder(inputs_embeds=d_x_list[],encoder_hidden_states=s[0]+t[3])[0]
+                # y3= self.decoder(inputs_embeds=d_x_list[],encoder_hidden_states=s[1]+t[2])[0]
+
+                y0_= self.out(self.decoder(inputs_embeds=d_x_list[0],encoder_hidden_states=s[2]+t[1],return_dict=True).last_hidden_state)
+                y1_= self.out(self.decoder(inputs_embeds=d_x_list[1],encoder_hidden_states=s[3]+t[0],return_dict=True).last_hidden_state)
+                y2_= self.out(self.decoder(inputs_embeds=d_x_list[2],encoder_hidden_states=s[0]+t[3],return_dict=True).last_hidden_state)
+                y3_= self.out(self.decoder(inputs_embeds=d_x_list[3],encoder_hidden_states=s[1]+t[2],return_dict=True).last_hidden_state)
 
         else:
-            # y0= self.decoder(inputs_embeds=s[2]+t[1])[0]
-            # y1= self.decoder(inputs_embeds=s[3]+t[0])[0]
-            # y2= self.decoder(inputs_embeds=s[0]+t[3])[0]
-            # y3= self.decoder(inputs_embeds=s[1]+t[2])[0]
-            y0= self.decoder(inputs_embeds=s[0]+t[1])[0]
-            y1= self.decoder(inputs_embeds=s[1]+t[0])[0]
-            y2= self.decoder(inputs_embeds=s[2]+t[3])[0]
-            y3= self.decoder(inputs_embeds=s[3]+t[2])[0]
-            y0_= self.out(self.decoder(inputs_embeds=s[2]+t[1])[0])
-            y1_= self.out(self.decoder(inputs_embeds=s[3]+t[0])[0])
-            y2_= self.out(self.decoder(inputs_embeds=s[0]+t[3])[0])
-            y3_= self.out(self.decoder(inputs_embeds=s[1]+t[2])[0])
+                        
+            y0= self.decoder(inputs_embeds=s[0]+t[1],return_dict=True).last_hidden_state
+            y1= self.decoder(inputs_embeds=s[1]+t[0],return_dict=True).last_hidden_state
+            y2= self.decoder(inputs_embeds=s[2]+t[3],return_dict=True).last_hidden_state
+            y3= self.decoder(inputs_embeds=s[3]+t[2],return_dict=True).last_hidden_state
+
+            if not args.nocross:
+                # y0= self.decoder(inputs_embeds=s[2]+t[1])[0]
+                # y1= self.decoder(inputs_embeds=s[3]+t[0])[0]
+                # y2= self.decoder(inputs_embeds=s[0]+t[3])[0]
+                # y3= self.decoder(inputs_embeds=s[1]+t[2])[0]
+
+                y0_= self.out(self.decoder(inputs_embeds=s[2]+t[1],return_dict=True).last_hidden_state)
+                y1_= self.out(self.decoder(inputs_embeds=s[3]+t[0],return_dict=True).last_hidden_state)
+                y2_= self.out(self.decoder(inputs_embeds=s[0]+t[3],return_dict=True).last_hidden_state)
+                y3_= self.out(self.decoder(inputs_embeds=s[1]+t[2],return_dict=True).last_hidden_state)
 
         
         y0=self.out(y0)
@@ -628,35 +664,7 @@ def valid(epoch):
 
             nf1 = 2 * (p*r) / (r + p + epsilon)
 
-        # mem = psutil.virtual_memory()
-        # # 系统总计内存
-        # # zj = float(mem.total) / 1024 / 1024 / 1024
-        # # 系统已经使用内存
-        # ysy = float(mem.used) / 1024 / 1024 / 1024
 
-        # # 系统空闲内存
-        # kx = float(mem.free) / 1024 / 1024 / 1024
-        # bj = psutil.Process(os.getpid()).memory_info().rss / 1024 / 1024
-        # print('系统总计内存:%d.3GB' % zj)
-        # print('系统已经使用内存:%d.3GB' % ysy)
-        # print('系统空闲内存:%d.3GB' % kx)
-        # update the progress bar
-    #     if it%300==0:
-    #         # pbar.set_postfix(
-    #         print({
-    #             'valid_loss': "%.05f" % (running_loss / it),
-    #             # 'loss_s': "%.05f" % (running_loss_s / it),
-    #             'loss_const': "%.05f" % (running_loss_t / it),
-    #             'loss_trans': "%.05f" % (running_loss_trans / it),
-    #             'loss_syth': "%.05f" % (running_loss_syth / it),
-    #             'note_f1':"%.05f" % (nf1),
-    #         # '系统总计内存':"%.05f" % zj,
-    # #    '系统已经使用内存':"%.05f" % ysy,
-    # #     '系统空闲内存':"%.05f" % kx,
-    # #     '本进程占用内存(MB)':"%.05f" % (bj),
-    #     })
-
-        # print('本进程占用内存(MB)%.05f' % (bj))
     # accuracy = correct/total
     epoch_loss = (running_loss_syth / it)#.tolist()
     epoch_const_loss=(running_loss_t / it)
@@ -695,7 +703,7 @@ def get_lr():
     return optimizer.param_groups[0]['lr']
 
 def parse_fn(features):
-    # print(60, features['inputs_embeds'].shape,type(features['inputs_embeds']))
+
    
     features['x0'] =np.frombuffer(
         features['x0'], dtype=np.float32).reshape(args.segwidth, -1)
@@ -789,7 +797,7 @@ if __name__=="__main__":
     if args.comment:
         full_name = '%s_%s' % (full_name, args.comment)
 
-    model = Thoegaze(d_model=args.dmodel,use_transcription_loss=args.usetrans,use_max_pooling=args.usemaxpool)
+    model = Thoegaze(d_model=args.dmodel,use_transcription_loss=args.usetrans)
 
     writer = SummaryWriter(comment=('double_trans' + full_name))
     if use_gpu:
