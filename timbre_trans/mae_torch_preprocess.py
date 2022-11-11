@@ -23,7 +23,7 @@ import argparse
 
 parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.ArgumentDefaultsHelpFormatter)
 # Create a temporary config file pointing to the correct soundfont
-parser.add_argument("--samplerate", type=int, default=22050, help='')
+parser.add_argument("--samplerate", type=int, default=19200, help='')
 parser.add_argument("--nfft", type=int, default=2048, help='')
 parser.add_argument("--delete_wav", type=int, default=1, help='')
 parser.add_argument("--segwidth", type=int, default=256, help='')
@@ -150,11 +150,15 @@ def load_audio(audio):
     return samples
 
 
+fmin = 40
+min_level_db = -100
+ref_level_db = 20
 
+def amp_to_db(x):
+    return 20 * np.log10(np.maximum(1e-5, x))
 
-
-
-
+def normalize(S):
+    return np.clip((S - min_level_db) / -min_level_db, 0, 1)
 
 def tokenize(midfile=None, audio=None,method='cqt',return_target=True,delete_wav=args.delete_wav,sample_rate=sample_rate,hop_width=hop_width,nfft=args.nfft,seg_width=seg_width,return_padding_length=False):
 
@@ -173,8 +177,10 @@ def tokenize(midfile=None, audio=None,method='cqt',return_target=True,delete_wav
                          hop_length=hop_width, fmin=27.50, n_bins=nbins, bins_per_octave=36)
     elif method == 'stft':
         frames = librosa.stft(y=frames,n_fft=nfft, hop_length=hop_width)
-        frames,phase=librosa.magphase(frames)
-        frames=np.log1p(frames)
+        # frames,phase=librosa.magphase(frames)
+        frames = amp_to_db(np.abs(frames)) - ref_level_db
+        # frames=np.log1p(frames)
+        frames = normalize(frames)
     elif method == 'melspec':
         frames = librosa.feature.melspectrogram(y=frames, sr=sample_rate, n_fft=2048, hop_length=hop_width,n_mels=229, fmin=30, fmax=8000)# librosa.feature.melspectrogram(audio, sr=16000, n_fft=2048, hop_length=160, n_mels=229, fmin=30, fmax=8000)
     # frames = np.abs(frames)
@@ -183,7 +189,7 @@ def tokenize(midfile=None, audio=None,method='cqt',return_target=True,delete_wav
     # print("nbins",nbins)
     padding_length=seg_width-temp%seg_width
     frames = np.pad(frames, ((0, padding_length), (0, 0)))
-    # print(191,frames.shape)
+
     # if onsets_only:
     #   times, values = note_sequence_to_onsets(ns)
     # else:
@@ -312,18 +318,18 @@ def make_datasets(path, output_file,voutput_file,tag='train',nums=None,vnums=Non
                             't0':(str(t0).encode('utf-8'), 'byte'),
                             't1':(str(t1).encode('utf-8'), 'byte'),
                         })
-                        vcout+=1
+                        vout+=1
                         if vnums:
-                            if vcout==vnums:
+                            if vout==vnums:
                                 vwriter.close()
-                                return cout,vcout
+                                return cout,vout
                     
             except AssertionError as e: 
                 # print(file,'too short <10s') 
                 continue
     writer.close()
 
-    return cout,vcout
+    return cout,vout
 
 def find_files(root):
     for d, dirs, files in os.walk(root):
