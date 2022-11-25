@@ -1,3 +1,4 @@
+from MelGAN.generate import synthesis, save_wav, create_model, attempt_to_restore
 import warnings
 warnings.filterwarnings("ignore", category=UserWarning)
 import gc
@@ -15,7 +16,6 @@ from tqdm.auto import tqdm
 from tensorboardX import SummaryWriter
 from torch.utils.data import DataLoader
 # from torch.utils.data.sampler import WeightedRandomSampler
-
 import numpy as np
 from tfrecord.torch.dataset import TFRecordDataset
 import soundfile as sf
@@ -39,22 +39,20 @@ parser.add_argument("--lr-scheduler", choices=['plateau', 'step'], default='plat
 parser.add_argument("--lr-scheduler-patience", type=int, default=5, help='lr scheduler plateau: Number of epochs with no improvement after which learning rate will be reduced')
 parser.add_argument("--lr-scheduler-step-size", type=int, default=50, help='lr scheduler step: number of epochs of learning rate decay.')
 parser.add_argument("--lr-scheduler-gamma", type=float, default=0.1, help='learning rate is multiplied by the gamma to decrease it')
-parser.add_argument("--max-epochs", type=int, default=60, help='max number of epochs')
+
 parser.add_argument("--resume", type=str, help='checkpoint file to resume')
-parser.add_argument("--segwidth", type=int, default=256, help='')
+parser.add_argument("--segwidth", type=int, default=32, help='')
 parser.add_argument("--dropout", type=float, default=0.0, help='dropout rate')
-parser.add_argument("--alpha", type=float, default=0.5, help='')
-parser.add_argument("--beta", type=float, default=0.8, help='')
-parser.add_argument("--gamma", type=float, default=0.2, help='')
+
 
 parser.add_argument("--nfft", type=int, default=2048, help='')
-parser.add_argument("--sr", type=int, default=19200, help='')
-parser.add_argument("--dmodel", type=int, default=1024, help='')
+parser.add_argument("--sr", type=int, default=16000, help='')
+parser.add_argument("--dmodel", type=int, default=512, help='')
 parser.add_argument("--layers", type=int, default=6, help='')
 parser.add_argument("--d_layers", type=int, default=6, help='')
 parser.add_argument("--usetrans", type=int, default=0, help='')
 parser.add_argument("--pooling_type", type=str, default='gru', help='')
-parser.add_argument("--features", type=str, default='stft', help='')
+parser.add_argument("--features", type=str, default='melspec', help='')
 parser.add_argument("--vq", type=int, default=1, help='')
 parser.add_argument("--auto_regrssion_decoder", type=int, default=1, help='')
 args = parser.parse_args()
@@ -71,7 +69,15 @@ preemphasis = .97 # or None
 max_db = 100
 ref_db = 20
 top_db = 15
+parser1 = argparse.ArgumentParser()
 
+parser1.add_argument('--num_workers', type=int, default=4,
+                    help='Number of dataloader workers.')
+parser1.add_argument('--resume', type=str, default="logdir")
+parser1.add_argument('--local_condition_dim', type=int, default=80)
+
+
+args1 = parser.parse_args()
 
 config = MyConfig(vocab_size=91+args.segwidth, input_length=args.segwidth, use_position_embed=True, return_dict=False,use_dense=False, d_model=args.dmodel, d_kv=64, d_ff=1024, num_layers=args.layers, num_decoder_layers=None, num_heads=8, relative_attention_num_buckets=32, dropout_rate=args.dropout,
                   layer_norm_epsilon=1e-06, initializer_factor=1.0, feed_forward_proj='relu', is_encoder_decoder=True, use_cache=False,
@@ -322,6 +328,20 @@ def get_wav(spectr,name='test.wav',N=500):
     sf.write(name, y, args.sr, 'PCM_24')
     # librosa.output.write_wav('test.wav', y, args.sr, norm=False)
 
+
+def mel2wav(model,conditions, name='test.wav'):
+
+
+    conditions = torch.FloatTensor(conditions).unsqueeze(0)
+    conditions = conditions.transpose(1, 2).to(device)
+    audio = model(conditions)
+    audio = audio.cpu().squeeze().detach().numpy()
+    # print(audio.shape)
+
+    # save_wav(np.squeeze(sample), name)
+    save_wav(np.asarray(audio), name)
+   
+
 @torch.no_grad()
 def predict(content,timbre):
     content,cpl=tokenize(audio=content,method='stft',sample_rate=args.sr,hop_width=int(args.sr/32),nfft=args.nfft,seg_width=args.segwidth,return_target=False,delete_wav=False,return_padding_length=True)
@@ -376,9 +396,19 @@ def predict(content,timbre):
     
     # spec=spec[:-cpl,:]
     #2wav
+    _model = create_model(args1)
+    _model.eval()
+    if args1.resume is not None:
+       attempt_to_restore(model, args1.resume, use_gpu)
+    
+    device = torch.device("cuda" if use_gpu else "cpu")
+    _model.to(device)
+    _model.remove_weight_norm()
+    specs=torch.tensor(specs)
+    specs=torch.reshape(specs,(-1,320,80))
     for i, spec in enumerate(specs):
-        spec=spec.cpu()
-        get_wav(spec,str(i)+'.wav',50)
+        # spec=spec.cpu()
+        mel2wav(_model,spec,str(i)+'.wav')
     # librosa.output.write_wav("gg_stft.wav", wav, sr)
     # sf.write('test.wav', wav, 25600, 'PCM_24')
     # librosa.output.write_wav("test.wav", wav, sr)
