@@ -30,7 +30,7 @@ parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.A
 # parser.add_argument("--background-noise", type=str, default='datasets/speech_commands/train/_background_noise_', help='path of background noise')
 parser.add_argument("--comment", type=str, default='', help='comment in tensorboard title')
 
-parser.add_argument("--batch_size", type=int, default=16, help='batch size')
+parser.add_argument("--batch_size", type=int, default=1, help='batch size')
 parser.add_argument("--dataload-workers-nums", type=int, default=4, help='number of workers for dataloader')
 parser.add_argument("--weight-decay", type=float, default=1e-2, help='weight decay')
 parser.add_argument("--optim", choices=['sgd', 'adam'], default='sgd', help='choices of optimization algorithms')
@@ -48,12 +48,12 @@ parser.add_argument("--beta", type=float, default=0.8, help='')
 parser.add_argument("--gamma", type=float, default=0.2, help='')
 
 parser.add_argument("--nfft", type=int, default=2048, help='')
-parser.add_argument("--sr", type=int, default=22050, help='')
+parser.add_argument("--sr", type=int, default=19200, help='')
 parser.add_argument("--dmodel", type=int, default=1024, help='')
 parser.add_argument("--layers", type=int, default=6, help='')
 parser.add_argument("--d_layers", type=int, default=6, help='')
 parser.add_argument("--usetrans", type=int, default=0, help='')
-parser.add_argument("--pooling_type", type=str, default='max', help='')
+parser.add_argument("--pooling_type", type=str, default='gru', help='')
 parser.add_argument("--features", type=str, default='stft', help='')
 parser.add_argument("--vq", type=int, default=1, help='')
 parser.add_argument("--auto_regrssion_decoder", type=int, default=1, help='')
@@ -148,7 +148,7 @@ class Thoegaze(nn.Module):
             _t=timbre
             content=self.embedding(content)
 
-            content = self.pos_emb(content)
+            # content = self.pos_emb(content)
             _s= self.s_encoder(inputs_embeds=content)[0]
             if args.vq:
                 _s,_,_=self.vq(_s)
@@ -157,8 +157,8 @@ class Thoegaze(nn.Module):
         # x=self.relu(x)
         else:
 
-            timbre=self.embedding(timbre)
-            timbre = self.pos_emb(timbre)
+            timbre= self.embedding(timbre)
+            # timbre = self.pos_emb(timbre)
             _t = self.t_encoder(inputs_embeds=timbre)[0]
             if self.pooling_type=='gru':
                 _,h0=self.gru(_t,h0)
@@ -175,17 +175,21 @@ class Thoegaze(nn.Module):
         if args.auto_regrssion_decoder:
             bs,sl,hs=content.size()
             ie=torch.zeros((bs,sl,hs))
+            if use_gpu:
+                ie=ie.cuda()
             for i in range(1,sl):
                 am=nn.functional.pad(torch.ones((bs,i)),(0,sl-i,0,0),'constant',value=0)
-
+                if use_gpu:
+                    am=am.cuda()
                 y0= self.decoder(inputs_embeds=ie,attention_mask=am,encoder_hidden_states=_s+_t)[0]
 
                 ie[:,i,:]=y0[:,i-1,:]
                
                 
             y0=self.decoder(inputs_embeds=ie,encoder_hidden_states=_s+_t)[0]
-            y0=torch.cat((ie[:,1:,:],y0[:,sl-1,:]),dim=1)
-        y0= self.decoder(inputs_embeds=_s+_t)[0]
+            y0=torch.cat((ie[:,1:,:],torch.unsqueeze(y0[:,sl-1,:],1)),dim=1)
+        else:
+            y0= self.decoder(inputs_embeds=_s+_t)[0]
         
 
 
@@ -290,6 +294,7 @@ def invert_spectrogram(spectrogram):
 def get_wav(spectr,name='test.wav',N=500):
     # spectr = torchfile.load(S)
     spectr=spectr.transpose(-1,-2)
+    print(297,type(spectr))
     S = np.zeros([int(args.nfft / 2) + 1, spectr.shape[1]])
     S[:spectr.shape[0]] = spectr
 
@@ -319,11 +324,13 @@ def get_wav(spectr,name='test.wav',N=500):
 
 @torch.no_grad()
 def predict(content,timbre):
-    content,cpl=tokenize(audio=content,method='stft',sample_rate=44100,hop_width=int(args.sr/32),nfft=args.nfft,seg_width=args.segwidth,return_target=False,delete_wav=False,return_padding_length=True)
-    timbre,tpl=tokenize(audio=timbre,method='stft',sample_rate=44100,hop_width=int(args.sr/32),nfft=args.nfft,seg_width=args.segwidth,return_target=False,delete_wav=False,return_padding_length=True)
+    content,cpl=tokenize(audio=content,method='stft',sample_rate=args.sr,hop_width=int(args.sr/32),nfft=args.nfft,seg_width=args.segwidth,return_target=False,delete_wav=False,return_padding_length=True)
+    timbre,tpl=tokenize(audio=timbre,method='stft',sample_rate=args.sr,hop_width=int(args.sr/32),nfft=args.nfft,seg_width=args.segwidth,return_target=False,delete_wav=False,return_padding_length=True)
     # model.eval()
     content=torch.from_numpy(content)
     timbre=torch.from_numpy(timbre)
+    content = content[1:5]
+    timbre=timbre[10:30]
     if use_gpu:
         content = content.cuda()
         timbre = timbre.cuda()
@@ -331,9 +338,11 @@ def predict(content,timbre):
     i=0
     _timbre=None
     ht=None
+    print('extract timbre...')
     while i< len(timbre):
         
         _t,ht = model(timbre=timbre[i:i+args.batch_size,:,:],type='timbre',h0=ht)
+        print(337,_t.size(),ht.size())
         i+=args.batch_size
         _t=torch.reshape(_t,(-1,_t.size()[-1]))
         if args.pooling_type=='max':
@@ -350,8 +359,7 @@ def predict(content,timbre):
                 _timbre=torch.cat((_timbre,_t),0)
             else:
                 _timbre=_t
-    if not args.pooling_type:
-        _timbre=torch.mean(_timbre[:-tpl,:],0)   
+    print('timbre got!')
     i=0
     spec=None
     specs=[]
@@ -369,7 +377,8 @@ def predict(content,timbre):
     # spec=spec[:-cpl,:]
     #2wav
     for i, spec in enumerate(specs):
-        get_wav(spec,str(i)+'.wav',200)
+        spec=spec.cpu()
+        get_wav(spec,str(i)+'.wav',50)
     # librosa.output.write_wav("gg_stft.wav", wav, sr)
     # sf.write('test.wav', wav, 25600, 'PCM_24')
     # librosa.output.write_wav("test.wav", wav, sr)
@@ -378,12 +387,12 @@ def predict(content,timbre):
 @torch.no_grad()
 def test(content,timbre):
     content,cpl=tokenize(audio=content,method='stft',sample_rate=args.sr,hop_width=int(args.sr/32),nfft=args.nfft,seg_width=args.segwidth,return_target=False,delete_wav=False,return_padding_length=True)
-    print(418,content.shape)
+
     # content=content[0]#
     content=np.reshape(content,(-1,1025))
     content=content[:-cpl,:]
     #2wav
-    print(423,content.shape)
+
     get_wav(content)
 
 
@@ -422,30 +431,27 @@ if __name__=="__main__":
     # print('alpha',args.alpha,'beta',args.beta,'gamma',args.gamma)
     # model=Thoegaze(d_model=args.dmodel,use_transcription_loss=False,use_max_pooling=args.pooling_type)
     if use_gpu:
-        model=torch.load("/data/state-spaces-main/sashimi/checkpoints/thoagazer_s4_sgd_plateau_bs8_lr5.0e-05_wd1.0e-02_vqstftconst-best-const-los-tt.pth")
+        model=torch.load("/data/state-spaces-main/sashimi/checkpoints/thoagazer_s4_sgd_plateau_bs16_lr5.0e-05_wd1.0e-02_vqstftconstbiggerbeta-best-const-los-tt.pth")
     else:
-        model=torch.load("/data/state-spaces-main/sashimi/checkpoints/thoagazer_s4_sgd_plateau_bs8_lr5.0e-05_wd1.0e-02_vqstftconst-best-const-los-tt.pth",map_location=torch.device('cpu'))
-    # print(type(model),418)
+        model=torch.load("/data/state-spaces-main/sashimi/checkpoints/thoagazer_s4_sgd_plateau_bs16_lr5.0e-05_wd1.0e-02_vqstftconstbiggerbeta-best-const-los-tt.pth",map_location=torch.device('cpu'))
+
     if isinstance(model,torch.nn.DataParallel):
         model = model.module
     model.to(device)
-    # print(model.device)
-    # if use_gpu:
-    # for k,v in params.items():
-    #     print(398,k)
+
     model.eval()
-    # print(model.device)
-    # print(type(model))
+
     
     midi_content='test_music/MIDI-Unprocessed_Recital5-7_MID--AUDIO_05_R1_2018_wav--1.midi'
     midi_timbre='test_music/MIDI-Unprocessed_Recital5-7_MID--AUDIO_05_R1_2018_wav--1.midi'
     instruments_li=list(instruments)
     instrument_content=instruments_li[0]
     instrument_timbre=instruments_li[1]
-    content=renderMidi( midi_content, select_midi_soundfont(*instruments[instrument_content]),instrument_content,return_file_path=True)
-    timbre=renderMidi( midi_timbre, select_midi_soundfont(*instruments[instrument_timbre]),instrument_timbre,return_file_path=True)
-    # predict()
-    # print(content,timbre)
+    # content=renderMidi( midi_content, select_midi_soundfont(*instruments[instrument_content]),instrument_content,return_file_path=True)
+    # timbre=renderMidi( midi_timbre, select_midi_soundfont(*instruments[instrument_timbre]),instrument_timbre,return_file_path=True)
+
+    content="/data/state-spaces-main/sashimi/test_music/MIDI-Unprocessed_Recital5-7_MID--AUDIO_05_R1_2018_wav--1.electric guitar Distort.wav"
+    timbre="/data/state-spaces-main/sashimi/test_music/MIDI-Unprocessed_Recital5-7_MID--AUDIO_05_R1_2018_wav--1.electric guitar Dry.wav"
     predict(content,timbre)
 
 
