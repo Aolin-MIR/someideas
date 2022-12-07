@@ -1,4 +1,5 @@
-from MelGAN.generate import synthesis, save_wav, create_model, attempt_to_restore
+from MelGAN.generate import synthesis, create_model, attempt_to_restore
+from MelGAN.utils.audio import save_wav
 import warnings
 warnings.filterwarnings("ignore", category=UserWarning)
 import gc
@@ -41,7 +42,7 @@ parser.add_argument("--lr-scheduler-step-size", type=int, default=50, help='lr s
 parser.add_argument("--lr-scheduler-gamma", type=float, default=0.1, help='learning rate is multiplied by the gamma to decrease it')
 
 parser.add_argument("--resume", type=str, help='checkpoint file to resume')
-parser.add_argument("--segwidth", type=int, default=32, help='')
+parser.add_argument("--segwidth", type=int, default=256, help='')
 parser.add_argument("--dropout", type=float, default=0.0, help='dropout rate')
 
 
@@ -77,7 +78,7 @@ parser1.add_argument('--resume', type=str, default="logdir")
 parser1.add_argument('--local_condition_dim', type=int, default=80)
 
 
-args1 = parser.parse_args()
+args1 = parser1.parse_args()
 
 config = MyConfig(vocab_size=91+args.segwidth, input_length=args.segwidth, use_position_embed=True, return_dict=False,use_dense=False, d_model=args.dmodel, d_kv=64, d_ff=1024, num_layers=args.layers, num_decoder_layers=None, num_heads=8, relative_attention_num_buckets=32, dropout_rate=args.dropout,
                   layer_norm_epsilon=1e-06, initializer_factor=1.0, feed_forward_proj='relu', is_encoder_decoder=True, use_cache=False,
@@ -332,7 +333,9 @@ def get_wav(spectr,name='test.wav',N=500):
 def mel2wav(model,conditions, name='test.wav'):
 
 
-    conditions = torch.FloatTensor(conditions).unsqueeze(0)
+    # conditions = torch.FloatTensor(conditions).unsqueeze(0)
+    conditions=torch.unsqueeze(conditions,0)
+    # print(338,conditions.size())
     conditions = conditions.transpose(1, 2).to(device)
     audio = model(conditions)
     audio = audio.cpu().squeeze().detach().numpy()
@@ -344,11 +347,12 @@ def mel2wav(model,conditions, name='test.wav'):
 
 @torch.no_grad()
 def predict(content,timbre):
-    content,cpl=tokenize(audio=content,method='stft',sample_rate=args.sr,hop_width=int(args.sr/32),nfft=args.nfft,seg_width=args.segwidth,return_target=False,delete_wav=False,return_padding_length=True)
-    timbre,tpl=tokenize(audio=timbre,method='stft',sample_rate=args.sr,hop_width=int(args.sr/32),nfft=args.nfft,seg_width=args.segwidth,return_target=False,delete_wav=False,return_padding_length=True)
+    content,cpl=tokenize(audio=content,method='melspec',sample_rate=args.sr,hop_width=int(args.sr/32),nfft=args.nfft,seg_width=args.segwidth,return_target=False,delete_wav=False,return_padding_length=True)
+    timbre,tpl=tokenize(audio=timbre,method='melspec',sample_rate=args.sr,hop_width=int(args.sr/32),nfft=args.nfft,seg_width=args.segwidth,return_target=False,delete_wav=False,return_padding_length=True)
     # model.eval()
     content=torch.from_numpy(content)
     timbre=torch.from_numpy(timbre)
+    print(355,content.shape)
     content = content[1:5]
     timbre=timbre[10:30]
     if use_gpu:
@@ -396,16 +400,11 @@ def predict(content,timbre):
     
     # spec=spec[:-cpl,:]
     #2wav
-    _model = create_model(args1)
-    _model.eval()
-    if args1.resume is not None:
-       attempt_to_restore(model, args1.resume, use_gpu)
-    
-    device = torch.device("cuda" if use_gpu else "cpu")
-    _model.to(device)
-    _model.remove_weight_norm()
-    specs=torch.tensor(specs)
-    specs=torch.reshape(specs,(-1,320,80))
+
+    # print(408,type(specs),specs)
+    specs=torch.stack(specs,0)
+    print(405,specs.size())
+    specs=torch.reshape(specs,(-1,args.segwidth,80))
     for i, spec in enumerate(specs):
         # spec=spec.cpu()
         mel2wav(_model,spec,str(i)+'.wav')
@@ -461,9 +460,9 @@ if __name__=="__main__":
     # print('alpha',args.alpha,'beta',args.beta,'gamma',args.gamma)
     # model=Thoegaze(d_model=args.dmodel,use_transcription_loss=False,use_max_pooling=args.pooling_type)
     if use_gpu:
-        model=torch.load("/data/state-spaces-main/sashimi/checkpoints/thoagazer_s4_sgd_plateau_bs16_lr5.0e-05_wd1.0e-02_vqstftconstbiggerbeta-best-const-los-tt.pth")
+        model=torch.load("/data/state-spaces-main/sashimi/checkpoints/thoagazer_s4_sgd_plateau_bs128_lr5.0e-05_wd1.0e-02_vqmelconstbiggerbeta-best-los-tt.pth")
     else:
-        model=torch.load("/data/state-spaces-main/sashimi/checkpoints/thoagazer_s4_sgd_plateau_bs16_lr5.0e-05_wd1.0e-02_vqstftconstbiggerbeta-best-const-los-tt.pth",map_location=torch.device('cpu'))
+        model=torch.load("/data/state-spaces-main/sashimi/checkpoints/thoagazer_s4_sgd_plateau_bs128_lr5.0e-05_wd1.0e-02_vqmelconstbiggerbeta-best-los-tt.pth",map_location=torch.device('cpu'))
 
     if isinstance(model,torch.nn.DataParallel):
         model = model.module
@@ -471,6 +470,13 @@ if __name__=="__main__":
 
     model.eval()
 
+    #melgan
+    _model = create_model(args1)   
+    if args1.resume is not None:
+       attempt_to_restore(_model, args1.resume, use_gpu)
+    _model.to(device)
+    _model.remove_weight_norm()
+    _model.eval()
     
     midi_content='test_music/MIDI-Unprocessed_Recital5-7_MID--AUDIO_05_R1_2018_wav--1.midi'
     midi_timbre='test_music/MIDI-Unprocessed_Recital5-7_MID--AUDIO_05_R1_2018_wav--1.midi'
