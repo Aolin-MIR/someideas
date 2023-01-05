@@ -26,7 +26,7 @@ def create_model(args):
 
 def save_checkpoint(args, generator, discriminator, g_optimizer,
                     d_optimizer, step, logging):
-    checkpoint_path = os.path.join(args.checkpoint_dir, "model.ckpt-{}.pt".format(step))
+    checkpoint_path = os.path.join(args.checkpoint_dir, "model.ckpt-best.pt")
 
     torch.save({"generator": generator.state_dict(),
                 "discriminator": discriminator.state_dict(),
@@ -35,7 +35,7 @@ def save_checkpoint(args, generator, discriminator, g_optimizer,
                 "global_step": step
                 }, checkpoint_path)
 
-    logging.info("Saved checkpoint: {}".format(checkpoint_path))
+    # logging.info("Saved checkpoint: {}".format(checkpoint_path))
 
     with open(os.path.join(args.checkpoint_dir, 'checkpoint'), 'w') as f:
         f.write("model.ckpt-{}.pt".format(step))
@@ -69,7 +69,51 @@ def load_checkpoint(checkpoint_path, use_cuda):
             checkpoint_path, map_location=lambda storage, loc: storage)
 
     return checkpoint
+def valid(args,generator,stft_criterion):
+    device = torch.device("cuda" if args.use_cuda else "cpu")
+    # generator, discriminator = create_model(args)
+    valid_dataset = CustomerDataset(
+        args.input,
+        upsample_factor=hop_length,
+        local_condition=True,
+        global_condition=False)
+    collate = CustomerCollate(
+        upsample_factor=hop_length,
+        condition_window=args.condition_window,
+        local_condition=True,
+        global_condition=False)
+    num_gpu = torch.cuda.device_count() if args.use_cuda else 1
+    it=0
+    sc_loss, mag_loss=0,0
+    train_data_loader = DataLoader(valid_dataset, collate_fn=collate,
+            batch_size=args.batch_size, num_workers=args.num_workers,
+               shuffle=True, pin_memory=True)    
+    for batch, (samples, conditions) in enumerate(train_data_loader):
 
+        # start = time.time()
+        batch_size = int(conditions.shape[0] // num_gpu * num_gpu)
+
+        samples = samples[:batch_size, :].to(device)
+        conditions = conditions[:batch_size, :, :].to(device)
+        
+        # losses = {}
+
+        if num_gpu > 1:
+            g_outputs = parallel(generator, (conditions, ))
+        else:
+            g_outputs = generator(conditions)
+
+
+
+
+        _sc_loss, _mag_loss = stft_criterion(g_outputs.squeeze(1), samples.squeeze(1))
+        it+=batch_size
+
+    sc_loss+=_sc_loss.item()   
+    mag_loss+=_mag_loss.item()
+    return (sc_loss + mag_loss)/it
+        
+     
 def train(args):
 
     os.makedirs(args.checkpoint_dir, exist_ok=True)
@@ -115,21 +159,22 @@ def train(args):
 
     criterion = nn.MSELoss().to(device)
     stft_criterion = MultiResolutionSTFTLoss()
-
+    es=0
+    best_vl=1e100
     for epoch in range(args.epochs):
 
-       collate = CustomerCollate(
-           upsample_factor=hop_length,
-           condition_window=args.condition_window,
-           local_condition=True,
-           global_condition=False)
+        collate = CustomerCollate(
+            upsample_factor=hop_length,
+            condition_window=args.condition_window,
+            local_condition=True,
+            global_condition=False)
 
-       train_data_loader = DataLoader(train_dataset, collate_fn=collate,
-               batch_size=args.batch_size, num_workers=args.num_workers,
-               shuffle=True, pin_memory=True)
+        train_data_loader = DataLoader(train_dataset, collate_fn=collate,
+                batch_size=args.batch_size, num_workers=args.num_workers,
+                shuffle=True, pin_memory=True)
 
-       #train one epoch
-       for batch, (samples, conditions) in enumerate(train_data_loader):
+        #train one epoch
+        for batch, (samples, conditions) in enumerate(train_data_loader):
 
             start = time.time()
             batch_size = int(conditions.shape[0] // num_gpu * num_gpu)
@@ -145,7 +190,7 @@ def train(args):
                 g_outputs = generator(conditions)
 
             #train discriminator
-            if global_step > args.discriminator_train_start_steps:
+            if epoch > args.discriminator_train_start_steps:
                 if num_gpu > 1:
                     fake_scores = parallel(discriminator, (g_outputs.detach(),))
                     real_scores = parallel(discriminator, (samples,))
@@ -181,7 +226,7 @@ def train(args):
             losses['d_loss'] = d_loss.item()
 
             #train generator
-            if global_step > args.discriminator_train_start_steps:
+            if epoch > args.discriminator_train_start_steps:
                 if num_gpu > 1:
                     fake_scores = parallel(discriminator, (g_outputs,))
                 else:
@@ -199,11 +244,11 @@ def train(args):
 
             sc_loss, mag_loss = stft_criterion(g_outputs.squeeze(1), samples.squeeze(1))
 
-            if global_step > args.discriminator_train_start_steps:
+            if epoch > args.discriminator_train_start_steps:
                 g_loss = adv_loss * args.lamda_adv + sc_loss + mag_loss
             else:
                 g_loss = sc_loss + mag_loss
-           
+            
             losses['adv_loss'] = adv_loss.item()
             losses['sc_loss'] = sc_loss.item()
             losses['mag_loss'] = mag_loss.item()
@@ -215,27 +260,29 @@ def train(args):
             customer_g_optimizer.step_and_update_lr()
 
             time_used = time.time() - start
+            if  global_step%1000==0:
+                if epoch > args.discriminator_train_start_steps :
+                    logging.info("Step: {} --adv_loss: {:.3f} --sc_loss: {:.3f} --mag_loss: {:.3f} --real_loss: {:.3f} --fake_loss: {:.3f} --Time: {:.2f} seconds".format(global_step, adv_loss, sc_loss, mag_loss, d_loss_real, d_loss_fake, time_used))
+                else:
+                    logging.info("Step: {} --sc_loss: {:.3f} --mag_loss: {:.3f} --Time: {:.2f} seconds".format(
+                        global_step, sc_loss, mag_loss, time_used))
+            global_step+=1
 
-            if global_step > args.discriminator_train_start_steps:
-                logging.info("Step: {} --adv_loss: {:.3f} --sc_loss: {:.3f} --mag_loss: {:.3f} --real_loss: {:.3f} --fake_loss: {:.3f} --Time: {:.2f} seconds".format(global_step, adv_loss, sc_loss, mag_loss, d_loss_real, d_loss_fake, time_used))
-            else:
-                logging.info("Step: {} --sc_loss: {:.3f} --mag_loss: {:.3f} --Time: {:.2f} seconds".format(
-                   global_step, sc_loss, mag_loss, time_used))
 
-            if global_step % args.checkpoint_step ==0:
+            
+        if epoch > args.discriminator_train_start_steps :
+            vl = valid(args,generator,stft_criterion)
+            if vl<best_vl:
+                best_vl=vl
                 save_checkpoint(args, generator, discriminator,
-                     g_optimizer, d_optimizer, global_step, logging)
-                
-            if global_step % args.summary_step == 0:
+                        g_optimizer, d_optimizer, global_step, logging)
                 writer.logging_loss(losses, global_step)
-                target = samples.cpu().detach()[0, 0].numpy()
-                predict = g_outputs.cpu().detach()[0, 0].numpy()
-                writer.logging_audio(target, predict, global_step)
-                writer.logging_histogram(generator, global_step)
-                writer.logging_histogram(discriminator, global_step)
 
-            global_step += 1
-
+            else:
+                es+=1
+            if es > 15:
+                logging.info('early stop{}'.format(epoch))
+                break
 def main():
 
     def _str_to_bool(s):
@@ -247,11 +294,12 @@ def main():
 
     parser = argparse.ArgumentParser()
     parser.add_argument('--input', type=str, default='data/train', help='Directory of training data')
+    parser.add_argument('--valid', type=str, default='data/test', help='Directory of valid data')
     parser.add_argument('--num_workers',type=int, default=1, help='Number of dataloader workers.')
-    parser.add_argument('--epochs', type=int, default=50000)
+    parser.add_argument('--epochs', type=int, default=5000)
     parser.add_argument('--checkpoint_dir', type=str, default="logdir", help="Directory to save model")
     parser.add_argument('--resume', type=str, default=None, help="The model name to restore")
-    parser.add_argument('--checkpoint_step', type=int, default=5000)
+    # parser.add_argument('--checkpoint_step', type=int, default=5000)
     parser.add_argument('--summary_step', type=int, default=100)
     parser.add_argument('--use_cuda', type=_str_to_bool, default=True)
     parser.add_argument('--g_learning_rate', type=float, default=0.0001)
@@ -259,11 +307,11 @@ def main():
     parser.add_argument('--warmup_steps', type=int, default=100000)
     parser.add_argument('--decay_learning_rate', type=float, default=0.5)
     parser.add_argument('--local_condition_dim', type=int, default=80)
-    parser.add_argument('--batch_size', type=int, default=32)
+    parser.add_argument('--batch_size', type=int, default=64)
     parser.add_argument('--condition_window', type=int, default=100)
     parser.add_argument('--lamda_adv', type=float, default=2.5)
     parser.add_argument('--logfile', type=str, default="txt")
-    parser.add_argument('--discriminator_train_start_steps', type=int, default=100000)
+    parser.add_argument('--discriminator_train_start_steps', type=int, default=3)
 
     args = parser.parse_args()
     train(args)
