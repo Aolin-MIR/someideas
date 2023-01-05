@@ -26,7 +26,7 @@ def create_model(args):
 
 def save_checkpoint(args, generator, discriminator, g_optimizer,
                     d_optimizer, step, logging):
-    checkpoint_path = os.path.join(args.checkpoint_dir, "model.ckpt-{}.pt".format(step))
+    checkpoint_path = os.path.join(args.checkpoint_dir, "model.ckpt-pre.pt".format(step))
 
     torch.save({"generator": generator.state_dict(),
                 "discriminator": discriminator.state_dict(),
@@ -35,10 +35,10 @@ def save_checkpoint(args, generator, discriminator, g_optimizer,
                 "global_step": step
                 }, checkpoint_path)
 
-    logging.info("Saved checkpoint: {}".format(checkpoint_path))
+    # logging.info("Saved checkpoint: {}".format(checkpoint_path))
 
     with open(os.path.join(args.checkpoint_dir, 'checkpoint'), 'w') as f:
-        f.write("model.ckpt-{}.pt".format(step))
+        f.write("model.ckpt-pre.pt")
 
 def attempt_to_restore(generator, discriminator, g_optimizer, d_optimizer,
                        checkpoint_dir, use_cuda, logging):
@@ -117,18 +117,18 @@ def train(args):
 
     for epoch in range(args.epochs):
 
-       collate = CustomerCollate(
-           upsample_factor=hop_length,
-           condition_window=args.condition_window,
-           local_condition=True,
-           global_condition=False)
+        collate = CustomerCollate(
+            upsample_factor=hop_length,
+            condition_window=args.condition_window,
+            local_condition=True,
+            global_condition=False)
 
-       train_data_loader = DataLoader(train_dataset, collate_fn=collate,
-               batch_size=args.batch_size, num_workers=args.num_workers,
-               shuffle=True, pin_memory=True)
+        train_data_loader = DataLoader(train_dataset, collate_fn=collate,
+                batch_size=args.batch_size, num_workers=args.num_workers,
+                shuffle=True, pin_memory=True)
 
-       #train one epoch
-       for batch, (samples, conditions) in enumerate(train_data_loader):
+        #train one epoch
+        for batch, (samples, conditions) in enumerate(train_data_loader):
 
             start = time.time()
             batch_size = int(conditions.shape[0] // num_gpu * num_gpu)
@@ -157,23 +157,24 @@ def train(args):
             customer_g_optimizer.step_and_update_lr()
 
             time_used = time.time() - start
-
-            logging.info("Step: {} --sc_loss: {:.3f} --mag_loss: {:.3f} --Time: {:.2f} seconds".format(
-                   global_step, sc_loss, mag_loss, time_used))
-
-            if global_step % args.checkpoint_step ==0:
-                save_checkpoint(args, generator, discriminator,
-                     g_optimizer, d_optimizer, global_step, logging)
-                
-            if global_step % args.summary_step == 0:
-                writer.logging_loss(losses, global_step)
-                target = samples.cpu().detach()[0, 0].numpy()
-                predict = g_outputs.cpu().detach()[0, 0].numpy()
-                writer.logging_audio(target, predict, global_step)
-                writer.logging_histogram(generator, global_step)
-                writer.logging_histogram(discriminator, global_step)
-
+            
+            if  global_step % args.checkpoint_step ==0:
+                logging.info("Step: {} --sc_loss: {:.3f} --mag_loss: {:.3f} --Time: {:.2f} seconds".format(
+                    global_step, sc_loss, mag_loss, time_used))
             global_step += 1
+        
+        save_checkpoint(args, generator, discriminator,
+                g_optimizer, d_optimizer, global_step, logging)
+                
+            
+        writer.logging_loss(losses, global_step)
+        # target = samples.cpu().detach()[0, 0].numpy()
+        # predict = g_outputs.cpu().detach()[0, 0].numpy()
+        # writer.logging_audio(target, predict, global_step)
+        # writer.logging_histogram(generator, global_step)
+        # writer.logging_histogram(discriminator, global_step)
+
+            
 
 def main():
 
@@ -187,22 +188,22 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--input', type=str, default='data/train', help='Directory of training data')
     parser.add_argument('--num_workers',type=int, default=1, help='Number of dataloader workers.')
-    parser.add_argument('--epochs', type=int, default=50000)
+    parser.add_argument('--epochs', type=int, default=1000)
     parser.add_argument('--checkpoint_dir', type=str, default="logdir", help="Directory to save model")
     parser.add_argument('--resume', type=str, default=None, help="The model name to restore")
-    parser.add_argument('--checkpoint_step', type=int, default=5000)
+    parser.add_argument('--checkpoint_step', type=int, default=3)
     parser.add_argument('--summary_step', type=int, default=100)
     parser.add_argument('--use_cuda', type=_str_to_bool, default=True)
     parser.add_argument('--g_learning_rate', type=float, default=0.001)
     parser.add_argument('--d_learning_rate', type=float, default=0.001)
-    parser.add_argument('--warmup_steps', type=int, default=100000)
+    parser.add_argument('--warmup_steps', type=int, default=500)
     parser.add_argument('--decay_learning_rate', type=float, default=0.5)
     parser.add_argument('--local_condition_dim', type=int, default=80)
     parser.add_argument('--batch_size', type=int, default=32)
     parser.add_argument('--condition_window', type=int, default=100)
     parser.add_argument('--lamda_adv', type=float, default=2.5)
     parser.add_argument('--logfile', type=str, default="txt")
-    parser.add_argument('--discriminator_train_start_steps', type=int, default=100000)
+    parser.add_argument('--discriminator_train_start_steps', type=int, default=500)
 
     args = parser.parse_args()
     train(args)
