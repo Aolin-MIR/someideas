@@ -42,7 +42,7 @@ parser.add_argument("--lr-scheduler-step-size", type=int, default=50, help='lr s
 parser.add_argument("--lr-scheduler-gamma", type=float, default=0.1, help='learning rate is multiplied by the gamma to decrease it')
 
 parser.add_argument("--resume", type=str, help='checkpoint file to resume')
-parser.add_argument("--segwidth", type=int, default=256, help='')
+parser.add_argument("--segwidth", type=int, default=512, help='')
 parser.add_argument("--dropout", type=float, default=0.0, help='dropout rate')
 
 
@@ -188,6 +188,7 @@ class Thoegaze(nn.Module):
                 am=nn.functional.pad(torch.ones((bs,i)),(0,sl-i,0,0),'constant',value=0)
                 if use_gpu:
                     am=am.cuda()
+                print(191,_s.size(),_t.size())
                 y0= self.decoder(inputs_embeds=ie,attention_mask=am,encoder_hidden_states=_s+_t)[0]
 
                 ie[:,i,:]=y0[:,i-1,:]
@@ -330,17 +331,20 @@ def get_wav(spectr,name='test.wav',N=500):
     # librosa.output.write_wav('test.wav', y, args.sr, norm=False)
 
 
-def mel2wav(model,conditions, name='test.wav'):
+def mel2wav(_model,conditions, name='test.wav'):
 
 
     # conditions = torch.FloatTensor(conditions).unsqueeze(0)
-    conditions=torch.unsqueeze(conditions,0)
+    if len(conditions.size())==2:
+        conditions=torch.unsqueeze(conditions,0)
     # print(338,conditions.size())
     conditions = conditions.transpose(1, 2).to(device)
-    audio = model(conditions)
+    print(341,conditions.size())
+    audio = _model(conditions)
     audio = audio.cpu().squeeze().detach().numpy()
-    # print(audio.shape)
-
+    print(343,audio.shape)
+    if len(audio.shape)>1 and audio.shape[0]>1:
+        audio=np.reshape(audio,(1,-1))
     # save_wav(np.squeeze(sample), name)
     save_wav(np.asarray(audio), name)
    
@@ -363,6 +367,7 @@ def predict(content,timbre):
     _timbre=None
     ht=None
     print('extract timbre...')
+    #need to be edited
     while i< len(timbre):
         
         _t,ht = model(timbre=timbre[i:i+args.batch_size,:,:],type='timbre',h0=ht)
@@ -372,8 +377,8 @@ def predict(content,timbre):
         if args.pooling_type=='max':
             _t,_=torch.max(_t,0)
             if not _timbre==None:
-                _timbre=torch.stack([_t,_timbre])
-                _timbre,_=torch.max(_timbre,0)
+                _timbre = torch.stack([_t,_timbre])
+                _timbre,_ = torch.max(_timbre,0)
             else:
                 _timbre=_t
         elif args.pooling_type=='gru':
@@ -411,8 +416,76 @@ def predict(content,timbre):
     # librosa.output.write_wav("gg_stft.wav", wav, sr)
     # sf.write('test.wav', wav, 25600, 'PCM_24')
     # librosa.output.write_wav("test.wav", wav, sr)
+@torch.no_grad()
+def _predict(content,timbre):
+    content,cpl=tokenize(audio=content,method='melspec',sample_rate=args.sr,hop_width=int(args.sr/32),nfft=args.nfft,seg_width=args.segwidth,return_target=False,delete_wav=False,return_padding_length=True)
+    timbre,tpl=tokenize(audio=timbre,method='melspec',sample_rate=args.sr,hop_width=int(args.sr/32),nfft=args.nfft,seg_width=args.segwidth,return_target=False,delete_wav=False,return_padding_length=True)
+    # model.eval()
+    content=torch.from_numpy(content)
+    timbre=torch.from_numpy(timbre)
+    print(355,content.shape)
+    content = content[1:5]
+    timbre=timbre[10]
+    timbre=torch.unsqueeze(timbre,0)
+    
 
+    mel2wav(_model,timbre[0],'timbre.wav')
+    # mel2wav(_model,timbre,'timbre.wav')
+    if use_gpu:
+        content = content.cuda()
+        timbre = timbre.cuda()
+        # forward/backward
+    i=0
+    _timbre=None
+    ht=None
+    print('extract timbre...')
+    #need to be edited
+    while i< len(timbre):
+        
+        _t,ht = model(timbre=timbre,type='timbre',h0=ht)
+        print(337,_t.size(),ht.size())
+        i+=args.batch_size
+        _t=torch.reshape(_t,(-1,_t.size()[-1]))
+        if args.pooling_type=='max':
+            _t,_=torch.max(_t,0)
+            if not _timbre==None:
+                _timbre = torch.stack([_t,_timbre])
+                _timbre,_ = torch.max(_timbre,0)
+            else:
+                _timbre=_t
+        elif args.pooling_type=='gru':
+            _timbre=_t
+        else:
+            if not _timbre==None:
+                _timbre=torch.cat((_timbre,_t),0)
+            else:
+                _timbre=_t
+    print('timbre got!')
+    i=0
+    spec=None
+    specs=[]
+    while i< len(content):
+        outs = model(content=content[i:i+args.batch_size,:,:],timbre=_timbre)
+        i+=args.batch_size
+        # out=torch.reshape(outs,(-1,out.size()[-1]))
+        for out in outs:
+            specs.append(out)
+        # if not spec==None:
+        #     spec=torch.cat((spec,out),0)
+        # else:
+        #     spec=out
+    
+    # spec=spec[:-cpl,:]
+    #2wav
 
+    # print(408,type(specs),specs)
+    specs=torch.stack(specs,0)
+    print(405,specs.size())
+    specs=torch.reshape(specs,(-1,args.segwidth,80))
+    for i, spec in enumerate(specs):
+        # spec=spec.cpu()
+        print(485,spec.size())
+        mel2wav(_model,spec,str(i)+'.wav')
 @torch.no_grad()
 def test(content,timbre):
     content,cpl=tokenize(audio=content,method='stft',sample_rate=args.sr,hop_width=int(args.sr/32),nfft=args.nfft,seg_width=args.segwidth,return_target=False,delete_wav=False,return_padding_length=True)
@@ -438,7 +511,7 @@ instruments = {
     # 'piano':('Chateau Grand Lite-v1.0.sf2',''),
     'electric guitar Dry':('Electric-Guitars-JNv4.4.sf2','Clean Guitar GU'),
     'electric guitar Distort':('Electric-Guitars-JNv4.4.sf2','Distortion SG'),
-    'electric guitar Jazz':('Electric-Guitars-JNv4.4.sf2','Jazz Guitar FR3'),
+    # 'electric guitar Jazz':('Electric-Guitars-JNv4.4.sf2','Jazz Guitar FR3'),
     'acoustic guitar':('Acoustic Guitars JNv2.4.sf2',''),
     'string':('Nice-Strings-PlusOrchestra-v1.6.sf2','String'),
     'orchestra':('Nice-Strings-PlusOrchestra-v1.6.sf2','Orchestra'),
@@ -460,9 +533,9 @@ if __name__=="__main__":
     # print('alpha',args.alpha,'beta',args.beta,'gamma',args.gamma)
     # model=Thoegaze(d_model=args.dmodel,use_transcription_loss=False,use_max_pooling=args.pooling_type)
     if use_gpu:
-        model=torch.load("/data/state-spaces-main/sashimi/checkpoints/thoagazer_s4_sgd_plateau_bs128_lr5.0e-05_wd1.0e-02_vqmelconstbiggerbeta-best-los-tt.pth")
+        model=torch.load("/data/state-spaces-main/sashimi/checkpoints/thoagazer_s4_sgd_plateau_bs8_lr5.0e-05_wd1.0e-02_2ivqmelconstbiggerbeta-best-los-tt.pth")
     else:
-        model=torch.load("/data/state-spaces-main/sashimi/checkpoints/thoagazer_s4_sgd_plateau_bs128_lr5.0e-05_wd1.0e-02_vqmelconstbiggerbeta-best-los-tt.pth",map_location=torch.device('cpu'))
+        model=torch.load("/data/state-spaces-main/sashimi/checkpoints/thoagazer_s4_sgd_plateau_bs8_lr5.0e-05_wd1.0e-02_2ivqmelconstbiggerbeta-best-los-tt.pth",map_location=torch.device('cpu'))
 
     if isinstance(model,torch.nn.DataParallel):
         model = model.module
@@ -488,6 +561,6 @@ if __name__=="__main__":
 
     content="/data/state-spaces-main/sashimi/test_music/MIDI-Unprocessed_Recital5-7_MID--AUDIO_05_R1_2018_wav--1.electric guitar Distort.wav"
     timbre="/data/state-spaces-main/sashimi/test_music/MIDI-Unprocessed_Recital5-7_MID--AUDIO_05_R1_2018_wav--1.electric guitar Dry.wav"
-    predict(content,timbre)
+    _predict(content,timbre)
 
 
