@@ -20,13 +20,14 @@ from tfrecord import reader
 from tfrecord import iterator_utils
 from transformers.models.t5.modeling_t5 import T5Stack
 from transformers.models.t5.configuration_t5 import T5Config
+from loss import STFTLoss
 parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.ArgumentDefaultsHelpFormatter)
 
 
 parser.add_argument("--comment", type=str, default='', help='comment in tensorboard title')
 parser.add_argument("--traindata_path", type=str, default='/data/traindatasets_small.tfrecord', help='')
 parser.add_argument("--validdata_path", type=str, default='/data/validdatasets_small.tfrecord', help='')
-parser.add_argument("--batch_size", type=int, default=8, help='batch size')
+parser.add_argument("--batch_size", type=int, default=128, help='batch size')
 parser.add_argument("--dataload-workers-nums", type=int, default=4, help='number of workers for dataloader')
 parser.add_argument("--weight-decay", type=float, default=1e-2, help='weight decay')
 parser.add_argument("--optim", choices=['sgd', 'adam'], default='sgd', help='choices of optimization algorithms')
@@ -37,25 +38,27 @@ parser.add_argument("--lr-scheduler-step-size", type=int, default=50, help='lr s
 parser.add_argument("--lr-scheduler-gamma", type=float, default=0.1, help='learning rate is multiplied by the gamma to decrease it')
 parser.add_argument("--maxepochs", type=int, default=30, help='max number of epochs')
 parser.add_argument("--resume", type=str, help='checkpoint file to resume')
-parser.add_argument("--segwidth", type=int, default=256, help='')
+parser.add_argument("--segwidth", type=int, default=512, help='')
 parser.add_argument("--dropout", type=float, default=0.1, help='dropout rate')
-parser.add_argument("--alpha", type=float, default=0.5, help='')
-parser.add_argument("--beta", type=float, default=0.8, help='')
-parser.add_argument("--gamma", type=float, default=0.2, help='')
+parser.add_argument("--alpha", type=float, default=1, help='')
+parser.add_argument("--beta", type=float, default=1, help='')
+parser.add_argument("--gamma", type=float, default=1, help='')
 parser.add_argument("--train_nums", type=int, default=100000, help='')
 parser.add_argument("--valid_nums", type=int, default=5000, help='')
-
+parser.add_argument("--sr", type=int, default=16000, help='')
 parser.add_argument("--nfft", type=int, default=2048, help='')
-parser.add_argument("--dmodel", type=int, default=1024, help='')
+parser.add_argument("--dmodel", type=int, default=256, help='')
 parser.add_argument("--layers", type=int, default=6, help='')
 parser.add_argument("--d_layers", type=int, default=6, help='')
 parser.add_argument("--usetrans", type=int, default=1, help='')
 parser.add_argument("--pooling_type", type=str, default='gru', help='')
 parser.add_argument("--nocross", type=int, default=0, help='')
-parser.add_argument("--features", type=str, default='stft', help='')
+parser.add_argument("--features", type=str, default='melspec', help='')
 parser.add_argument("--vq", type=int, default=1, help='')
 parser.add_argument("--auto_regrssion_decoder", type=int, default=1, help='')
 args = parser.parse_args()
+hopsize=80 if args.features=='melspec' else args.sr//32
+winsize=200 if args.features=='melspec' else args.nfft
 
 class MyConfig(T5Config):
     def __init__(self,
@@ -195,7 +198,7 @@ class Thoegaze(nn.Module):
         self.use_transcription_loss=use_transcription_loss
         encoder_config = copy.deepcopy(config)
         if args.features=='melspec':
-            n_features=229
+            n_features=80
         else: n_features=int(args.nfft/2+1)
         if args.vq:
             self.vq=VQEmbedding()
@@ -234,8 +237,7 @@ class Thoegaze(nn.Module):
         self.out =nn.Linear(self.d_model, n_features)
 
         self.tgt_emb = nn.Embedding(args.segwidth+91, d_model)
-        self.pos_emb = LearnableAbsolutePositionEmbedding(args.segwidth, d_model
-            )
+        # self.pos_emb = LearnableAbsolutePositionEmbedding(args.segwidth, d_model)
         self.s_decoder= T5Stack(s_decoder_config,embed_tokens=self.tgt_emb)
 
     def forward(self, x_list,decoder_inputs=None, state=None):
@@ -251,7 +253,7 @@ class Thoegaze(nn.Module):
 
             x=self.embedding(x)
 
-            x = self.pos_emb(x)
+            # x = self.pos_emb(x)
 
             d_x_list.append(x)
             _s= self.s_encoder(inputs_embeds=x,return_dict=True).last_hidden_state
@@ -289,12 +291,12 @@ class Thoegaze(nn.Module):
                 # if ss<ds:
                 mem_mask=torch.ones(bs,int(ss))
                 mem_mask=nn.functional.pad(mem_mask,(0,int(ss/2),0,0),'constant',value=0)  
-                # mem_mask=torch.t(mem_mask)
+
                 if use_gpu:
                     mem_mask=mem_mask.cuda()
                 _s=nn.functional.pad(_s,(0,0,0,int(ss/2),0,0),'constant',value=0)  
-                transcription_out.append(self.linear(self.s_decoder(input_ids=decoder_input,encoder_hidden_states=_s,encoder_attention_mask=mem_mask,use_cache=True,return_dict=True
-                ).last_hidden_state))
+                transcription_out.append(self.linear(self.s_decoder(input_ids=decoder_input,encoder_hidden_states=_s,encoder_attention_mask=mem_mask,use_cache=True,return_dict=False
+                )[0]))
 
         if args.auto_regrssion_decoder:
             d_x_list=[nn.functional.pad(x[:,:-1,:],(0,0,1,0,0,0),'constant',value=0) for x in d_x_list]
@@ -338,18 +340,19 @@ class Thoegaze(nn.Module):
         y1=self.out(y1)
         y2=self.out(y2)
         y3=self.out(y3)
-        out=[y0,y1,y2,y3]
+        out={}
+        out['synout']=[y0,y1,y2,y3]
         if not args.nocross:
-            out+=[y0_,y1_,y2_,y3_]
+            out['crossout']=[y0_,y1_,y2_,y3_]
 
         
         if self.use_transcription_loss:
 
-                out+=transcription_out
+                out['trans']=transcription_out
 
-        out+=t
+        out['t']=t
         if args.vq:
-            out+=losses
+            out['vq']=losses
         return out 
     def _shift_right(self, input_ids):
         decoder_start_token_id = 1
@@ -385,18 +388,19 @@ def criterion(outputs,inputs,score=None,alpha=0.5,beta=1,gamma=1,step=None):
     #     else:
     #         beta_s *= min(1., max(0., (step - beta_s_anneal_start) / beta_s_anneal_steps))
     if args.vq:
-        ls=outputs[-4:]
-        outputs=outputs[:-4]
+        ls=outputs['vq']
+        # outputs=outputs[:-4]
         para['commitment'] = 0.5
         para['codebook'] = 1
         loss['commitment']=sum([x['commitment'] for x in ls]).mean()
         loss['codebook']=sum([x['codebook'] for x in ls]).mean()
        
     if score:
-        if args.nocross:
-            y1,y2,y3,y4,_s1,_s2,_s3,_s4,t1,t2,t3,t4=outputs
-        else:
-            y1,y2,y3,y4,y1_,y2_,y3_,y4_,_s1,_s2,_s3,_s4,t1,t2,t3,t4=outputs
+        _s1,_s2,_s3,_s4=outputs['trans']
+        # if args.nocross:
+        #     y1,y2,y3,y4,_s1,_s2,_s3,_s4,t1,t2,t3,t4=outputs
+        # else:
+        #     y1,y2,y3,y4,y1_,y2_,y3_,y4_,_s1,_s2,_s3,_s4,t1,t2,t3,t4=outputs
         sa,sb=score
         if use_gpu:
             sa = sa.cuda().long()
@@ -406,24 +410,24 @@ def criterion(outputs,inputs,score=None,alpha=0.5,beta=1,gamma=1,step=None):
         # print(271,sa.size())
         sfn = torch.nn.CrossEntropyLoss(size_average=True,reduce=True,ignore_index=0)
 
-        para['transcription']=gamma
-        loss['transcription'] = sfn(torch.transpose(_s1, -2, -1),sa) + sfn(torch.transpose(_s3, -2, -1),sa) +sfn(torch.transpose(_s2, -2, -1),sb)+ sfn(torch.transpose(_s4, -2, -1),sb)
+        para['trans']=gamma
+        loss['trans'] = sfn(torch.transpose(_s1, -2, -1),sa) + sfn(torch.transpose(_s3, -2, -1),sa) +sfn(torch.transpose(_s2, -2, -1),sb)+ sfn(torch.transpose(_s4, -2, -1),sb)
 
-    else:
-        if args.nocross:
-            y1,y2,y3,y4,t1,t2,t3,t4=outputs
-        else:
-            y1,y2,y3,y4,y1_,y2_,y3_,y4_,t1,t2,t3,t4=outputs
+    
+        
+    y1,y2,y3,y4=outputs['synout']
+
+        
         
 
     x1,x2,x3,x4=inputs
-    fn=torch.nn.MSELoss()
+    fn=STFTLoss(fft_size=args.nfft,hop_size=hopsize,win_size=winsize)
 
     para['syth']=alpha
     loss['syth']=fn(x1,y1)+fn(x2,y2)+fn(x3,y3)+fn(x4,y4)
 
     if not args.nocross:
-
+        y1_,y2_,y3_,y4_=outputs['crossout']
         triplet_loss = nn.TripletMarginLoss(margin=1.0, p=2)
         para['const']=beta
         loss['const']= triplet_loss(y1_,y1,y2)+triplet_loss(y2_,y2,y1)+triplet_loss(y3_,y3,y4)+triplet_loss(y4_,y4,y3)+triplet_loss(y1_,y1,y3)+triplet_loss(y2_,y2,y4)+triplet_loss(y3_,y3,y1)+triplet_loss(y4_,y4,y1)
@@ -444,7 +448,7 @@ def note_f1_v3(outputs,sa,sb):
     total_pred = 0
     total_true = 0
     count = 0
-    _s1,_s2,_s3,_s4=outputs[-4:]
+    _s1,_s2,_s3,_s4=outputs['trans']
     pred=torch.cat([_s1,_s2,_s3,_s4],axis=0)
     target=torch.cat([sa,sb,sa,sb],axis=0)
 
@@ -574,7 +578,7 @@ def train(epoch):
             running_loss_trans += loss['trans'].item()
 
         running_loss_syth += loss['syth'].item()
-        if it%1000==0:
+        if it%20==0:
             print({'epoch':str(epoch+1),
                 'train_loss': "%.05f" % (running_loss / it),
                 'loss_commitment': "%.05f" % (running_loss_commitment / it),
@@ -664,7 +668,13 @@ def valid(epoch):
 
             nf1 = 2 * (p*r) / (r + p + epsilon)
 
+        if it%5==0:
+            print({'v_epoch':str(epoch+1),
+                'train_loss': "%.05f" % (running_loss / it),
 
+                'loss_const': "%.05f" % (running_loss_t / it),
+                'loss_trans': "%.05f" % (running_loss_trans / it),
+                'loss_syth': "%.05f" % (running_loss_syth / it),})
     # accuracy = correct/total
     epoch_loss = (running_loss_syth / it)#.tolist()
     epoch_const_loss=(running_loss_t / it)
@@ -683,9 +693,11 @@ def valid(epoch):
 
         if  nf1> best_f1:
             best_f1 = nf1
+
     #     torch.save(checkpoint, 'checkpoints/best-loss-speech-commands-checkpoint-%s.pth' % full_name)
     #     torch.save(model, '%d-%s-best-loss.pth' % (start_timestamp, full_name))
     # print(498,epoch_loss,type(epoch_loss),best_loss,type(best_loss))
+    print (checkpoint['loss'],checkpoint['f1'])
     if epoch_loss < best_loss:
         
         best_loss = epoch_loss
