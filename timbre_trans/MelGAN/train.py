@@ -109,8 +109,8 @@ def valid(args,generator,stft_criterion):
         _sc_loss, _mag_loss = stft_criterion(g_outputs.squeeze(1), samples.squeeze(1))
         it+=batch_size
 
-    sc_loss+=_sc_loss.item()   
-    mag_loss+=_mag_loss.item()
+        sc_loss+=_sc_loss.item()   
+        mag_loss+=_mag_loss.item()
     return (sc_loss + mag_loss)/it
         
      
