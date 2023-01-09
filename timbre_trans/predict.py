@@ -74,7 +74,7 @@ parser1 = argparse.ArgumentParser()
 
 parser1.add_argument('--num_workers', type=int, default=4,
                     help='Number of dataloader workers.')
-parser1.add_argument('--resume', type=str, default="logdir")
+parser1.add_argument('--resume', type=str, default="MelGAN/logdir")
 parser1.add_argument('--local_condition_dim', type=int, default=80)
 
 
@@ -349,73 +349,7 @@ def mel2wav(_model,conditions, name='test.wav'):
     save_wav(np.asarray(audio), name)
    
 
-@torch.no_grad()
-def predict(content,timbre):
-    content,cpl=tokenize(audio=content,method='melspec',sample_rate=args.sr,hop_width=int(args.sr/32),nfft=args.nfft,seg_width=args.segwidth,return_target=False,delete_wav=False,return_padding_length=True)
-    timbre,tpl=tokenize(audio=timbre,method='melspec',sample_rate=args.sr,hop_width=int(args.sr/32),nfft=args.nfft,seg_width=args.segwidth,return_target=False,delete_wav=False,return_padding_length=True)
-    # model.eval()
-    content=torch.from_numpy(content)
-    timbre=torch.from_numpy(timbre)
-    print(355,content.shape)
-    content = content[1:5]
-    timbre=timbre[10:30]
-    if use_gpu:
-        content = content.cuda()
-        timbre = timbre.cuda()
-        # forward/backward
-    i=0
-    _timbre=None
-    ht=None
-    print('extract timbre...')
-    #need to be edited
-    while i< len(timbre):
-        
-        _t,ht = model(timbre=timbre[i:i+args.batch_size,:,:],type='timbre',h0=ht)
-        print(337,_t.size(),ht.size())
-        i+=args.batch_size
-        _t=torch.reshape(_t,(-1,_t.size()[-1]))
-        if args.pooling_type=='max':
-            _t,_=torch.max(_t,0)
-            if not _timbre==None:
-                _timbre = torch.stack([_t,_timbre])
-                _timbre,_ = torch.max(_timbre,0)
-            else:
-                _timbre=_t
-        elif args.pooling_type=='gru':
-            _timbre=_t
-        else:
-            if not _timbre==None:
-                _timbre=torch.cat((_timbre,_t),0)
-            else:
-                _timbre=_t
-    print('timbre got!')
-    i=0
-    spec=None
-    specs=[]
-    while i< len(content):
-        outs = model(content=content[i:i+args.batch_size,:,:],timbre=_timbre)
-        i+=args.batch_size
-        # out=torch.reshape(outs,(-1,out.size()[-1]))
-        for out in outs:
-            specs.append(out)
-        # if not spec==None:
-        #     spec=torch.cat((spec,out),0)
-        # else:
-        #     spec=out
-    
-    # spec=spec[:-cpl,:]
-    #2wav
 
-    # print(408,type(specs),specs)
-    specs=torch.stack(specs,0)
-    print(405,specs.size())
-    specs=torch.reshape(specs,(-1,args.segwidth,80))
-    for i, spec in enumerate(specs):
-        # spec=spec.cpu()
-        mel2wav(_model,spec,str(i)+'.wav')
-    # librosa.output.write_wav("gg_stft.wav", wav, sr)
-    # sf.write('test.wav', wav, 25600, 'PCM_24')
-    # librosa.output.write_wav("test.wav", wav, sr)
 @torch.no_grad()
 def _predict(content,timbre):
     content,cpl=tokenize(audio=content,method='melspec',sample_rate=args.sr,hop_width=int(args.sr/32),nfft=args.nfft,seg_width=args.segwidth,return_target=False,delete_wav=False,return_padding_length=True)
@@ -425,11 +359,12 @@ def _predict(content,timbre):
     timbre=torch.from_numpy(timbre)
     print(355,content.shape)
     content = content[1:5]
-    timbre=timbre[10]
-    timbre=torch.unsqueeze(timbre,0)
+    timbre=timbre[:8]
+    _timbre=torch.reshape(timbre,(-1,80))
+    # timbre=torch.unsqueeze(timbre,0)
     
-
-    mel2wav(_model,timbre[0],'timbre.wav')
+    # print(timbre.size())
+    mel2wav(_model,_timbre[:400],'timbre.wav')
     # mel2wav(_model,timbre,'timbre.wav')
     if use_gpu:
         content = content.cuda()
@@ -442,7 +377,7 @@ def _predict(content,timbre):
     #need to be edited
     while i< len(timbre):
         
-        _t,ht = model(timbre=timbre,type='timbre',h0=ht)
+        _t,ht = model(timbre=timbre[i:i+args.batch_size,:,:],type='timbre',h0=ht)
         print(337,_t.size(),ht.size())
         i+=args.batch_size
         _t=torch.reshape(_t,(-1,_t.size()[-1]))
@@ -544,12 +479,13 @@ if __name__=="__main__":
     model.eval()
 
     #melgan
-    _model = create_model(args1)   
+    _model = create_model(args1)  
+    _model.eval()
     if args1.resume is not None:
        attempt_to_restore(_model, args1.resume, use_gpu)
     _model.to(device)
     _model.remove_weight_norm()
-    _model.eval()
+
     
     midi_content='test_music/MIDI-Unprocessed_Recital5-7_MID--AUDIO_05_R1_2018_wav--1.midi'
     midi_timbre='test_music/MIDI-Unprocessed_Recital5-7_MID--AUDIO_05_R1_2018_wav--1.midi'
