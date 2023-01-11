@@ -27,11 +27,17 @@ from transformers.models.t5.modeling_t5 import T5Stack
 from transformers.models.t5.configuration_t5 import T5Config
 from fast_thoegaze_v4 import VQEmbedding,MyConfig,LearnableAbsolutePositionEmbedding,CustomTFRecordDataset
 parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.ArgumentDefaultsHelpFormatter)
-
+import matplotlib.pyplot as plt
+import numpy as np
+import scipy.io.wavfile as wav
+import matplotlib
+from scipy.fft import fft
+import librosa
+import librosa.display
 # parser.add_argument("--background-noise", type=str, default='datasets/speech_commands/train/_background_noise_', help='path of background noise')
 parser.add_argument("--comment", type=str, default='', help='comment in tensorboard title')
 
-parser.add_argument("--batch_size", type=int, default=1, help='batch size')
+parser.add_argument("--batch_size", type=int, default=4, help='batch size')
 parser.add_argument("--dataload-workers-nums", type=int, default=4, help='number of workers for dataloader')
 parser.add_argument("--weight-decay", type=float, default=1e-2, help='weight decay')
 parser.add_argument("--optim", choices=['sgd', 'adam'], default='sgd', help='choices of optimization algorithms')
@@ -188,10 +194,13 @@ class Thoegaze(nn.Module):
                 am=nn.functional.pad(torch.ones((bs,i)),(0,sl-i,0,0),'constant',value=0)
                 if use_gpu:
                     am=am.cuda()
-                print(191,_s.size(),_t.size())
+                # print(191,_s.size(),_t.size())
                 y0= self.decoder(inputs_embeds=ie,attention_mask=am,encoder_hidden_states=_s+_t)[0]
+                # print(193,y0.size())
 
                 ie[:,i,:]=y0[:,i-1,:]
+                # _y0=y0[:,i-1,:]
+                # print(ie[0],ie[0]==ie[1])
                
                 
             y0=self.decoder(inputs_embeds=ie,encoder_hidden_states=_s+_t)[0]
@@ -357,14 +366,14 @@ def _predict(content,timbre):
     # model.eval()
     content=torch.from_numpy(content)
     timbre=torch.from_numpy(timbre)
-    print(355,content.shape)
-    content = content[1:5]
-    timbre=timbre[:8]
+    # print(355,content.shape)
+    content = content[:4]
+    timbre=timbre[1]
     _timbre=torch.reshape(timbre,(-1,80))
     # timbre=torch.unsqueeze(timbre,0)
     
     # print(timbre.size())
-    mel2wav(_model,_timbre[:400],'timbre.wav')
+    mel2wav(_model,_timbre,'1timbre.wav')
     # mel2wav(_model,timbre,'timbre.wav')
     if use_gpu:
         content = content.cuda()
@@ -375,10 +384,16 @@ def _predict(content,timbre):
     ht=None
     print('extract timbre...')
     #need to be edited
+    # print(timbre.size())
+    if len(timbre.size())<3:
+        timbre=torch.unsqueeze(timbre,0)
     while i< len(timbre):
-        
-        _t,ht = model(timbre=timbre[i:i+args.batch_size,:,:],type='timbre',h0=ht)
-        print(337,_t.size(),ht.size())
+        if len(timbre)==1:
+            _t,ht = model(timbre=timbre,type='timbre',h0=ht)
+        else:
+            _t,ht = model(timbre=timbre[i,:,:],type='timbre',h0=ht)
+        # print(337,_t.size(),ht.size())
+   
         i+=args.batch_size
         _t=torch.reshape(_t,(-1,_t.size()[-1]))
         if args.pooling_type=='max':
@@ -395,12 +410,12 @@ def _predict(content,timbre):
                 _timbre=torch.cat((_timbre,_t),0)
             else:
                 _timbre=_t
-    print('timbre got!')
+    print('timbre got!',_timbre.size())
     i=0
     spec=None
     specs=[]
     while i< len(content):
-        outs = model(content=content[i:i+args.batch_size,:,:],timbre=_timbre)
+        outs = model(content=content[i:i+args.batch_size,:,:],timbre=_timbre,type='syth')
         i+=args.batch_size
         # out=torch.reshape(outs,(-1,out.size()[-1]))
         for out in outs:
@@ -415,12 +430,25 @@ def _predict(content,timbre):
 
     # print(408,type(specs),specs)
     specs=torch.stack(specs,0)
-    print(405,specs.size())
+    # print(405,specs.size())
     specs=torch.reshape(specs,(-1,args.segwidth,80))
+    
     for i, spec in enumerate(specs):
+        librosa.display.specshow(spec.cpu().numpy(), y_axis='log')
+        plt.colorbar(format='%+2.0f dB')
+        plt.title('mel spectogram graph')
+        plt.xlabel('time(second)')
+        plt.ylabel('frequency hz')
+        plt.savefig(str(i)+'p.jpg')
+        librosa.display.specshow(content[i].cpu().numpy(), y_axis='log')
+        plt.colorbar(format='%+2.0f dB')
+        plt.title('mel spectogram graph')
+        plt.xlabel('time(second)')
+        plt.ylabel('frequency hz')
+        plt.savefig(str(i)+'t.jpg') 
         # spec=spec.cpu()
-        print(485,spec.size())
-        mel2wav(_model,spec,str(i)+'.wav')
+        # print(485,spec.size())
+        mel2wav(_model,spec,str(i)+'dd.wav')
 @torch.no_grad()
 def test(content,timbre):
     content,cpl=tokenize(audio=content,method='stft',sample_rate=args.sr,hop_width=int(args.sr/32),nfft=args.nfft,seg_width=args.segwidth,return_target=False,delete_wav=False,return_padding_length=True)
@@ -490,13 +518,27 @@ if __name__=="__main__":
     midi_content='test_music/MIDI-Unprocessed_Recital5-7_MID--AUDIO_05_R1_2018_wav--1.midi'
     midi_timbre='test_music/MIDI-Unprocessed_Recital5-7_MID--AUDIO_05_R1_2018_wav--1.midi'
     instruments_li=list(instruments)
-    instrument_content=instruments_li[0]
-    instrument_timbre=instruments_li[1]
+    instrument_content=instruments_li[0]#dry
+    instrument_timbre=instruments_li[1]#distort
     # content=renderMidi( midi_content, select_midi_soundfont(*instruments[instrument_content]),instrument_content,return_file_path=True)
-    # timbre=renderMidi( midi_timbre, select_midi_soundfont(*instruments[instrument_timbre]),instrument_timbre,return_file_path=True)
+    fake=renderMidi( midi_content, select_midi_soundfont(*instruments[instrument_timbre]),instrument_timbre,return_file_path=True)
 
-    content="/data/state-spaces-main/sashimi/test_music/MIDI-Unprocessed_Recital5-7_MID--AUDIO_05_R1_2018_wav--1.electric guitar Distort.wav"
-    timbre="/data/state-spaces-main/sashimi/test_music/MIDI-Unprocessed_Recital5-7_MID--AUDIO_05_R1_2018_wav--1.electric guitar Dry.wav"
+    timbre="/data/state-spaces-main/sashimi/test_music/MIDI-Unprocessed_Recital5-7_MID--AUDIO_05_R1_2018_wav--1.electric guitar Distort.wav"
+    content="/data/state-spaces-main/sashimi/test_music/MIDI-Unprocessed_Recital5-7_MID--AUDIO_05_R1_2018_wav--1.electric guitar Dry.wav"
+
     _predict(content,timbre)
 
 
+    content,cpl=tokenize(audio=fake,method='melspec',sample_rate=args.sr,hop_width=int(args.sr/32),nfft=args.nfft,seg_width=args.segwidth,return_target=False,delete_wav=False,return_padding_length=True)
+
+    # model.eval()
+    content=torch.from_numpy(content)
+
+    content = content[:4]
+
+    # _timbre=torch.reshape(timbre,(-1,80))
+        # timbre=torch.unsqueeze(timbre,0)
+        
+        # print(timbre.size())
+    for i, c in enumerate(content):
+        mel2wav(_model,c,str(i)+'p.wav')
