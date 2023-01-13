@@ -23,3 +23,8 @@ with prompt words. Our generative model predicts the label based on a given sent
 P(label|sentence) of each candidate. The candidate with the largest probability is selected as the prediction.
 
 
+兑换方式：
+
+第一步：点击兑换并扫码；
+第二步：在兑换礼品卡页面-输入ID编号及对应密码，点击“立即绑定”；
+第三步：绑定后即刻可在页面兑换页面进行兑换
