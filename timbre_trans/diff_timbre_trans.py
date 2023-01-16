@@ -715,7 +715,7 @@ def valid(epoch,es=0):
         es+=1
     del checkpoint  # reduce memory
 
-    return epoch_loss
+    return epoch_loss,es
 def get_lr():
     return optimizer.param_groups[0]['lr']
 
