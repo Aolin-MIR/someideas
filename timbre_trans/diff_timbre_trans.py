@@ -607,7 +607,7 @@ def train(epoch):
     # writer.add_scalar('%s/accuracy' % phase, 100*accuracy, epoch)
     # writer.add_scalar('%s/epoch_loss' % phase, epoch_loss, epoch)
 @torch.no_grad()
-def valid(epoch):
+def valid(epoch,es=0):
     global best_f1, best_loss, global_step,best_const_loss
     epsilon = 1e-7
     phase = 'valid'
@@ -710,11 +710,9 @@ def valid(epoch):
         best_loss = epoch_loss
         torch.save(checkpoint, './checkpoints/best-loss-tt-checkpoint-%s.pth' % full_name)
         torch.save(model, './checkpoints/%s-best-los-tt.pth' % ( full_name))
-    elif epoch_const_loss<best_const_loss:
-        torch.save(checkpoint, './checkpoints/best-const-loss-tt-checkpoint-%s.pth' % full_name)
-        torch.save(model, './checkpoints/%s-best-const-los-tt.pth' % ( full_name))
+        es=0
     else:
-        torch.save(checkpoint, './checkpoints/%s-last-tt.pth'% ( full_name))
+        es+=1
     del checkpoint  # reduce memory
 
     return epoch_loss
@@ -812,7 +810,7 @@ if __name__=="__main__":
 
 
     # a name used to save checkpoints etc.
-    full_name = '%s_%s_%s_bs%d_lr%.1e_wd%.1e' % ('thoagazer_s4', args.optim, args.lr_scheduler, args.batch_size, args.learning_rate, args.weight_decay)
+    full_name = '%s_%s_%s_bs%d_lr%.1e_wd%.1e' % ('dif', args.optim, args.lr_scheduler, args.batch_size, args.learning_rate, args.weight_decay)
     if args.comment:
         full_name = '%s_%s' % (full_name, args.comment)
 
@@ -855,7 +853,8 @@ if __name__=="__main__":
     else:
         lr_scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=args.lr_scheduler_step_size, gamma=args.lr_scheduler_gamma, last_epoch=start_epoch-1)
 
-
+    es=0
+    best_loss=1e100
 
 
     print("training %s for thoegazer..." % 'transformer ')
@@ -868,7 +867,10 @@ if __name__=="__main__":
         train(epoch)
         if use_gpu:
             torch.cuda.empty_cache()
-        epoch_loss = valid(epoch)
+        epoch_loss,es = valid(epoch,es)
+        if es>5:
+            print("early stop in epoch ",epoch)
+            break
         if use_gpu:
             torch.cuda.empty_cache()
         if args.lr_scheduler == 'plateau':
