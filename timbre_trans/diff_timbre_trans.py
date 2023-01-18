@@ -332,9 +332,9 @@ class Thoegaze(nn.Module):
         else:#DIFFUSION
                         
             y0= self.dif_decoder(x_list[0],embedding=s[0]+t[1])
-            y1= self.dif_decoder(x_list[1],embedding=s[0]+t[1])
-            y2= self.dif_decoder(x_list[2],embedding=s[0]+t[1])
-            y3= self.dif_decoder(x_list[3],embedding=s[0]+t[1])
+            y1= self.dif_decoder(x_list[1],embedding=s[1]+t[0])
+            y2= self.dif_decoder(x_list[2],embedding=s[2]+t[3])
+            y3= self.dif_decoder(x_list[3],embedding=s[3]+t[2])
 
             if not args.nocross:
                 # y0= self.decoder(inputs_embeds=s[2]+t[1])[0]
