@@ -576,7 +576,8 @@ def train(epoch):
         it += 1
         global_step += 1
         running_loss += loss['total'].item()
-        running_loss_t += loss['const'].item()
+        if not args.nocross:
+            running_loss_t += loss['const'].item()
         if args.vq:
             running_loss_commitment += loss['commitment'].item()
             running_loss_codebook += loss['codebook'].item()
@@ -658,7 +659,8 @@ def valid(epoch,es=0):
         global_step += 1
         running_loss += loss['total'].item()
         # running_loss_s += loss_s
-        running_loss_t += loss['const'].item()
+        if not args.nocross:
+            running_loss_t += loss['const'].item()
         
         running_loss_syth += loss['syth'].item()
     #加速noteF1的计算
