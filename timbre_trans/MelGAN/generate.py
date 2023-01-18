@@ -1,10 +1,15 @@
 import torch
-from MelGAN.utils.audio import save_wav
 import argparse
 import os
 import time
 import numpy as np
-from MelGAN.models.generator import Generator
+root_path = os.path.abspath(os.path.dirname(__file__)).split('shippingSchedule')[0]
+if 'MelGAN' in root_path:
+    from models.generator import Generator
+    from utils.audio import save_wav
+else:
+    from MelGAN.models.generator import Generator
+    from MelGAN.utils.audio import save_wav
 
 def attempt_to_restore(generate, checkpoint_dir, use_cuda):
     checkpoint_list = os.path.join(checkpoint_dir, 'checkpoint')
