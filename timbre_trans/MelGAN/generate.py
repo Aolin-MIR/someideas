@@ -3,8 +3,8 @@ import argparse
 import os
 import time
 import numpy as np
-root_path = os.path.abspath(os.path.dirname(__file__)).split('shippingSchedule')[0]
-if 'MelGAN' in root_path:
+wp=os.getcwd()
+if 'MelGAN' in wp:
     from models.generator import Generator
     from utils.audio import save_wav
 else:
