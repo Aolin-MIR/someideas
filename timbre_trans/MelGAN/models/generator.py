@@ -1,7 +1,13 @@
 import torch
 import torch.nn as nn
-from res_stack import ResStack
-from modules import UpsampleNet
+import os
+wp=os.getcwd()
+if 'MelGAN' in wp:
+    from models.res_stack import ResStack
+    from models.modules import UpsampleNet
+else:
+    from MelGAN.models.res_stack import ResStack
+    from MelGAN.models.modules import UpsampleNet
 import numpy as np
 
 class Generator(nn.Module):
