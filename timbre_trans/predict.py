@@ -62,6 +62,8 @@ parser.add_argument("--pooling_type", type=str, default='gru', help='')
 parser.add_argument("--features", type=str, default='melspec', help='')
 parser.add_argument("--vq", type=int, default=1, help='')
 parser.add_argument("--auto_regrssion_decoder", type=int, default=1, help='')
+parser.add_argument("--use_diff", type=int, default=1, help='diffusion')
+
 args = parser.parse_args()
 sr = args.sr # Sample rate.
 n_fft = args.nfft # fft points (samples)
@@ -94,6 +96,8 @@ config = MyConfig(vocab_size=91+args.segwidth, input_length=args.segwidth, use_p
                 decoder_start_token_id=1)
 
 
+if args.use_diff==1:
+    from audio_diffusion_pytorch import AudioDiffusionConditional
 
             
     
@@ -150,6 +154,13 @@ class Thoegaze(nn.Module):
         self.s_decoder= T5Stack(s_decoder_config,embed_tokens=self.tgt_emb)
         if args.vq:
             self.vq=VQEmbedding()
+        if args.use_diff:
+            self.dif_decoder=AudioDiffusionConditional(
+                in_channels=1,
+                embedding_max_length=args.segwidth,
+                embedding_features=self.d_model,
+                embedding_mask_proba=0.0 # Conditional dropout of batch elements
+            )
     def forward(self, content=None,timbre=None,decoder_inputs=None, state=None,type='syth',h0=None):
 
 
@@ -180,7 +191,9 @@ class Thoegaze(nn.Module):
                     _t,1)
             return _t,h0
 
-
+        if args.use_diff:
+            noise=torch.randn(_s.size())
+            y0= self.dif_decoder.sample(noise,embedding=_s+_t)
 
 
 
