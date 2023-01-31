@@ -706,7 +706,7 @@ def parse_fn(features):
             features['t']=features['t'][:int(1.5*args.segwidth)-1]+[2]
         else:
             features['t'] += [2]#eos
-            features['t'] += [0]*(int(1.5*args.segwidth)-len(features['t0']))
+            features['t'] += [0]*(int(1.5*args.segwidth)-len(features['t']))
 
     
         features['t']=torch.tensor(features['t'])
