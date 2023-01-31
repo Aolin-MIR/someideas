@@ -291,17 +291,17 @@ def make_datasets(path, output_file,voutput_file,tag='train',nums=None,vnums=Non
                 # random.shuffle(z1)
                 # random.shuffle(z0)                
                 for j in range(1,len(z0)):
-                    t0, s0, s2 = z0[j]
-                    t1, s1 ,s3 = z0[j-1]
+                    t, x, y = z0[j]
+                    _, _ ,c = z0[j-1]#context
                     # print(246,t0,t1)
                     if  mode == 0:
                         
                         writer.write({
-                            'x0': (s0.reshape([-1]).tobytes(), 'byte'), 
-                            'x1': (s1.reshape([-1]).tobytes(), 'byte'),
-                            'y': (s2.reshape([-1]).tobytes(), 'byte'),
+                            'x': (x.reshape([-1]).tobytes(), 'byte'), 
+                            'c': (y.reshape([-1]).tobytes(), 'byte'),
+                            'y': (c.reshape([-1]).tobytes(), 'byte'),
                             # 'x3': (s3.reshape([-1]).tobytes(), 'byte'),
-                            't0':(str(t0).encode('utf-8'), 'byte'),
+                            't':(str(t).encode('utf-8'), 'byte'),
                             # 't1':(str(t1).encode('utf-8'), 'byte'),
                         })
                         cout+=1
@@ -311,11 +311,11 @@ def make_datasets(path, output_file,voutput_file,tag='train',nums=None,vnums=Non
                                 mode=1
                     if mode==1:
                         vwriter.write({
-                            'x0': (s0.reshape([-1]).tobytes(), 'byte'), 
-                            'x1': (s1.reshape([-1]).tobytes(), 'byte'),
-                            'y': (s2.reshape([-1]).tobytes(), 'byte'),
+                            'x': (x.reshape([-1]).tobytes(), 'byte'), 
+                            'y': (y.reshape([-1]).tobytes(), 'byte'),
+                            'c': (c.reshape([-1]).tobytes(), 'byte'),
                             # 'x3': (s3.reshape([-1]).tobytes(), 'byte'),
-                            't0':(str(t0).encode('utf-8'), 'byte'),
+                            't':(str(t).encode('utf-8'), 'byte'),
                             # 't1':(str(t1).encode('utf-8'), 'byte'),
                         })
                         vout+=1
