@@ -143,3 +143,9 @@ Learning to summarize from Human Feedback （https://arxiv.org/pdf/2009.01325.pd
 PPO（https://arxiv.org/pdf/1707.06347.pdf）
 Deep reinforcement learning from human preferences （https://arxiv.org/abs/1706.03741）
 DeepMind 在 Sparrow 中提出了 OpenAI RLHF 的替代方案 （https://arxiv.org/pdf/2209.14375.pdf） 和 GopherCite （https://arxiv.org/abs/2203.11147）文件。
+
+
+ubuntu vnc
+tcp://2.tcp.cpolar.top:10216
+tcp
+tcp://127.0.0.1:5900
