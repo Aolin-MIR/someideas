@@ -1,7 +1,4 @@
-737trCtEr9tk58tkr1n36v7S7vnM7btU77nfn3tb
-
-
-# someideas
+stratum+tcp://btc.f2pool.com:3333# someideas
 composing: 
 1. 惩罚项 W 小二度音 
 2. 特征
