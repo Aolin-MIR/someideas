@@ -1,4 +1,5 @@
-stratum+tcp://btc.f2pool.com:3333# someideas
+stratum+ssl://cfxssl.f2pool.com:6820
+# someideas
 composing: 
 1. 惩罚项 W 小二度音 
 2. 特征
