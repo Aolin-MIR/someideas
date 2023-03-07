@@ -3,7 +3,8 @@ import librosa
 import os
 import numpy as np
 from scipy.fftpack.basic import fft
-
+from warnings import simplefilter
+simplefilter(action='ignore', category=FutureWarning)
 import dataclasses
 
 import math
@@ -11,8 +12,10 @@ from mid2target import mid2target
 from tqdm import tqdm
 import tfrecord
 from torch.utils.data import Dataset
-
+from MelGAN.utils.audio import melspectrogram
 import random
+import multiprocessing
+# from audio import melspectrogram
 #token id = time*88+note-21+1 eos=0
 from sf2utils.sf2parse import Sf2File # pip install sf2utils
 SYNTH_BIN = 'timidity'
@@ -23,24 +26,24 @@ import argparse
 
 parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.ArgumentDefaultsHelpFormatter)
 # Create a temporary config file pointing to the correct soundfont
-parser.add_argument("--samplerate", type=int, default=19200, help='')
+parser.add_argument("--samplerate", type=int, default=16000, help='')
 parser.add_argument("--nfft", type=int, default=2048, help='')
-parser.add_argument("--delete_wav", type=int, default=1, help='')
+parser.add_argument("--delete_wav", type=int, default=0, help='')
 parser.add_argument("--segwidth", type=int, default=256, help='')
 parser.add_argument("--train_nums", type=int, default=100000, help='')
-parser.add_argument("--valid_nums", type=int, default=5000, help='')
-parser.add_argument("--traindatasets", type=str, default='/common-data/liaolin/traindatasets', help='')
-parser.add_argument("--validdatasets", type=str, default='/common-data/liaolin/validdatasets', help='')
-parser.add_argument("--maestropath", type=str, default='/common-data/liaolin/maestro-v3.0.0/', help='')
-parser.add_argument("--method", type=str, default='stft', help='')
+parser.add_argument("--valid_nums", type=int, default=10000, help='')
+parser.add_argument("--traindatasets", type=str, default='/data/liaolin/traindatasetsbig', help='')
+parser.add_argument("--validdatasets", type=str, default='/data/liaolin/aliddatasetsbig', help='')
+parser.add_argument("--maestropath", type=str, default='/data/liaolin/maestro-v3.0.0/', help='')
+parser.add_argument("--method", type=str, default='melspec', help='')
 args = parser.parse_args()
 
 sample_rate = args.samplerate
-hop_width = int(sample_rate/32)
+hop_width = 200 if args.method == 'melspec' else int(sample_rate/32)
 seg_width = args.segwidth
 def select_midi_soundfont(name, instrument='default'):
-    matches = sorted(Path('./data/soundfont/').glob('**/' + name))
-    matches = sorted(Path('./sf2').glob('**/' + name))
+    matches = sorted(Path('/data/liaolin/soundfont/').glob('**/' + name))
+    
     if len(matches) == 0:
         raise Exception('Could not find soundfont: ' + name)
     elif len(matches) > 1:
@@ -56,7 +59,7 @@ def select_midi_soundfont(name, instrument='default'):
                 preset_num = preset.preset
             #if preset.name != 'EOP':
             #    print('Preset {}: {}'.format(preset.preset, preset.name))
-        print('Using preset', preset_num)
+        # print('Using preset', preset_num)
     
     cfgpath = fontpath.with_suffix('.'+instrument+'.cfg')
     with open(cfgpath, 'w') as f:
@@ -76,16 +79,16 @@ instruments = {
     # 'piano':('Chateau Grand Lite-v1.0.sf2',''),
     'electric guitar Dry':('Electric-Guitars-JNv4.4.sf2','Clean Guitar GU'),
     'electric guitar Distort':('Electric-Guitars-JNv4.4.sf2','Distortion SG'),
-    'electric guitar Jazz':('Electric-Guitars-JNv4.4.sf2','Jazz Guitar FR3'),
-    'acoustic guitar':('Acoustic Guitars JNv2.4.sf2',''),
-    'string':('Nice-Strings-PlusOrchestra-v1.6.sf2','String'),
-    'orchestra':('Nice-Strings-PlusOrchestra-v1.6.sf2','Orchestra'),
-    'cello':('Nice-Strings-PlusOrchestra-v1.6.sf2','Cello 1'),
-    'violin':('Nice-Strings-PlusOrchestra-v1.6.sf2','Violin 1'),
-    'brass':('Nice-Strings-PlusOrchestra-v1.6.sf2','Brass'),
-    'trumpet':('Nice-Strings-PlusOrchestra-v1.6.sf2','Trumpet 2'),
-    'flute':('Expressive Flute SSO-v1.2.sf2',''),
-    'mandolin':('Chris Mandolin-4U-v3.0.sf2','Full Exp Mandolin'),
+    # 'electric guitar Jazz':('Electric-Guitars-JNv4.4.sf2','Jazz Guitar FR3'),
+    # 'acoustic guitar':('Acoustic Guitars JNv2.4.sf2',''),
+    # 'string':('Nice-Strings-PlusOrchestra-v1.6.sf2','String'),
+    # 'orchestra':('Nice-Strings-PlusOrchestra-v1.6.sf2','Orchestra'),
+    # 'cello':('Nice-Strings-PlusOrchestra-v1.6.sf2','Cello 1'),
+    # 'violin':('Nice-Strings-PlusOrchestra-v1.6.sf2','Violin 1'),
+    # 'brass':('Nice-Strings-PlusOrchestra-v1.6.sf2','Brass'),
+    # 'trumpet':('Nice-Strings-PlusOrchestra-v1.6.sf2','Trumpet 2'),
+    # 'flute':('Expressive Flute SSO-v1.2.sf2',''),
+    # 'mandolin':('Chris Mandolin-4U-v3.0.sf2','Full Exp Mandolin'),
 }
 
 def midi2wav(file, outpath, cfg):
@@ -101,18 +104,21 @@ def midi2wav(file, outpath, cfg):
     return subprocess.call(cmds, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 # render the given midi file with the given instruments, generate spectrograms and save
 def renderMidi( f, cfgs,instrument,return_file_path=False):
-    print(str(f), flush=True)
+    # print(str(f), flush=True)
     # min_len = 2 << 63
     # render the waveform files
     # for (j, instrument) in enumerate(instruments):
-    print(instrument, '...')
+    # print(instrument, '...')
     # synthesize midi with timidity++, obtain waveform
-    file = Path(f).with_suffix('.'+instrument+'.wav')
+    file = Path(f).with_suffix('.'+instrument.replace(' ', '-')+'.wav')
     if midi2wav(f, file, cfgs)!=0:
         print('midi2wav failed!')
+        return 0
     else:
         if return_file_path:
             return file
+        else:
+            return 1
 
     # cur_len = len(librosa.load(str(file), sr = sample_rate)[0])
     # min_len = min(min_len, cur_len)
@@ -182,7 +188,10 @@ def tokenize(midfile=None, audio=None,method='cqt',return_target=True,delete_wav
         # frames=np.log1p(frames)
         frames = normalize(frames)
     elif method == 'melspec':
-        frames = librosa.feature.melspectrogram(y=frames, sr=sample_rate, n_fft=2048, hop_length=hop_width,n_mels=229, fmin=30, fmax=8000)# librosa.feature.melspectrogram(audio, sr=16000, n_fft=2048, hop_length=160, n_mels=229, fmin=30, fmax=8000)
+        # frames = librosa.feature.melspectrogram(y=frames, sr=sample_rate, n_fft=2048, hop_length=hop_width,n_mels=229, fmin=30, fmax=8000)# librosa.feature.melspectrogram(audio, sr=16000, n_fft=2048, hop_length=160, n_mels=229, fmin=30, fmax=8000)
+        frames = melspectrogram(frames).astype(np.float32)
+        frames=np.abs(frames)
+
     # frames = np.abs(frames)
     frames = np.transpose(frames)
     temp, nbins = frames.shape
@@ -225,7 +234,11 @@ def dump_targets(midfile, segs_num):
 
     return targets
    
-
+def remove_wav(path):
+    try:
+        os.remove(path)
+    except:
+        pass
 
 
 def make_datasets(path, output_file,voutput_file,tag='train',nums=None,vnums=None,render=True):
@@ -233,13 +246,14 @@ def make_datasets(path, output_file,voutput_file,tag='train',nums=None,vnums=Non
     mid_Filelist = []
     for home, dirs, files in os.walk(path):
         for filename in files:
+            # if '2018' in filename:
             # 文件名列表，包含完整路径
-            if tag=='train':
-                if 'midi' == filename[-4:] and '2018' not in filename:
-                    mid_Filelist.append(os.path.join(home, filename))
-            else:
-                if 'midi' == filename[-4:] and '2018'  in filename:
-                    mid_Filelist.append(os.path.join(home, filename))
+                if tag=='train':
+                    if 'midi' == filename[-4:]:
+                        mid_Filelist.append(os.path.join(home, filename))
+                # else:
+                #     if 'midi' == filename[-4:] and '3.midi'  in filename:
+                #         mid_Filelist.append(os.path.join(home, filename))
             # # 文件名列表，只包含文件名
             # Filelist.append( filename)
 
@@ -248,82 +262,124 @@ def make_datasets(path, output_file,voutput_file,tag='train',nums=None,vnums=Non
     cout=0
     vout=0
     mode=0
+    render_failed=0
     random.shuffle(mid_Filelist)
     inst_num=len(instruments)
     inst_list=list(instruments)
-
-    for j in range(len(mid_Filelist)//2):
+    for instrument in instruments:
+        renderMidi(mid_Filelist[0], select_midi_soundfont(
+            *instruments[instrument]), instrument)
+        renderMidi(mid_Filelist[1], select_midi_soundfont(
+            *instruments[instrument]), instrument)
+    print('midi nums:',len(mid_Filelist))
+    for j in range(1,len(mid_Filelist)//2):
 
         random.shuffle(inst_list)
-        file1=mid_Filelist[j*2]
-        file2=mid_Filelist[j*2+1]
-        
-        if render:
-            for instrument in instruments:
-                renderMidi( file1, select_midi_soundfont(*instruments[instrument]),instrument)
-                renderMidi( file2, select_midi_soundfont(*instruments[instrument]),instrument)
+        file1=mid_Filelist[j*2-2]
+        file2=mid_Filelist[j*2+1-2]
+        file3 = mid_Filelist[j*2]
+        file4 = mid_Filelist[j*2+1]
+        # if render:
+        #     for instrument in instruments:
+        #         renderMidi( file1, select_midi_soundfont(*instruments[instrument]),instrument)
+        #         renderMidi( file2, select_midi_soundfont(*instruments[instrument]),instrument)
         for i in range(inst_num//2):
             
 
             try:
  
-  
-                targets0, split_audio0, _ = tokenize(file1, file1[:-4]+inst_list[i*2]+'.wav',method=args.method)
-                targets1, split_audio1, _ = tokenize(file2, file2[:-4]+inst_list[i*2]+'.wav',method=args.method)
-                split_audio2 = tokenize(file1, file1[:-4]+inst_list[i*2+1]+'.wav',method=args.method,return_target=False)
-                split_audio3 = tokenize(file2, file2[:-4]+inst_list[i*2+1]+'.wav',method=args.method,return_target=False)
+                p = multiprocessing.Pool(processes=8)
+                if not render_failed:
 
+                    r0 = p.apply_async(tokenize,(file1, file1[:-4]+inst_list[i*2].replace(' ','-')+'.wav',args.method,))
+                    r1 = p.apply_async(
+                        tokenize, (file2, file2[:-4]+inst_list[i*2].replace(' ', '-')+'.wav', args.method,))
+                    r2 = p.apply_async(tokenize,(
+                        file1, file1[:-4]+inst_list[i*2+1].replace(' ', '-')+'.wav', args.method, False,))
+                    r3 = p.apply_async(tokenize, (file2, file2[:-4]+inst_list[i*2+1].replace(
+                        ' ', '-')+'.wav', args.method, False,))
+                result=[]
+                if render and vnums != vout:
 
-                z0=[]#list(zip(targets0, list(split_audio0),list(split_audio2)))
-                z1=[]#list(zip(targets1, list(split_audio1),list(split_audio3)))
-
-                for t0, s0 ,s2 in zip(targets0, list(split_audio0),list(split_audio2)):
-
-                    # if np.all(t0==0): #and random.randint(0, 100)!=5: 
-                    if t0==[[]]*seg_width: 
-                        continue
-                    z0.append((t0,s0,s2))
-                for t1, s1 ,s3 in zip(targets1, list(split_audio1),list(split_audio3)):
-                    # print(178,s.shape)
-                    if t1==[[]]*seg_width: #and random.randint(0, 100)!=5:  
-                        continue
-                    z1.append((t1,s1,s3))
-                random.shuffle(z1)
-                random.shuffle(z0)                
-                for j in range(min(len(z1),len(z0))):
-                    t0, s0, s2 = z0[j]
-                    t1, s1 ,s3 = z1[j]
-                    # print(246,t0,t1)
-                    if  mode == 0:
+                    for instrument in instruments:
+                        result.append(p.apply_async( renderMidi,(file3, select_midi_soundfont(
+                            *instruments[instrument]), instrument,)))
                         
-                        writer.write({
-                            'x0': (s0.reshape([-1]).tobytes(), 'byte'), 
-                            'x1': (s1.reshape([-1]).tobytes(), 'byte'),
-                            'x2': (s2.reshape([-1]).tobytes(), 'byte'),
-                            'x3': (s3.reshape([-1]).tobytes(), 'byte'),
-                            't0':(str(t0).encode('utf-8'), 'byte'),
-                            't1':(str(t1).encode('utf-8'), 'byte'),
-                        })
-                        cout+=1
-                        if nums:
-                            if cout==nums:
-                                writer.close()
-                                mode=1
-                    if mode==1:
-                        vwriter.write({
-                            'x0': (s0.reshape([-1]).tobytes(), 'byte'), 
-                            'x1': (s1.reshape([-1]).tobytes(), 'byte'),
-                            'x2': (s2.reshape([-1]).tobytes(), 'byte'),
-                            'x3': (s3.reshape([-1]).tobytes(), 'byte'),
-                            't0':(str(t0).encode('utf-8'), 'byte'),
-                            't1':(str(t1).encode('utf-8'), 'byte'),
-                        })
-                        vout+=1
-                        if vnums:
-                            if vout==vnums:
-                                vwriter.close()
-                                return cout,vout
-                    
+                        result.append ( p.apply_async(renderMidi, (file4, select_midi_soundfont(
+                            *instruments[instrument]), instrument,)))
+
+                p.close()
+                p.join()
+
+                remove_wav(file1[:-4]+inst_list[i*2].replace(' ', '-')+'.wav')
+                remove_wav(file2[:-4]+inst_list[i*2].replace(' ', '-')+'.wav')
+                remove_wav(file1[:-4]+inst_list[i*2+1].replace(' ', '-')+'.wav')
+                remove_wav(file2[:-4]+inst_list[i*2+1].replace(' ', '-')+'.wav')
+
+                if not render_failed:
+                    targets0, split_audio0, _ =r0.get()
+                    targets1, split_audio1, _ =r1.get()
+                    split_audio2=r2.get()
+                    split_audio3=r3.get()
+
+
+                    z0=[]#list(zip(targets0, list(split_audio0),list(split_audio2)))
+                    z1=[]#list(zip(targets1, list(split_audio1),list(split_audio3)))
+
+                    for t0, s0 ,s2 in zip(targets0, list(split_audio0),list(split_audio2)):
+
+                        # if np.all(t0==0): #and random.randint(0, 100)!=5: 
+                        if t0==[[]]*seg_width: 
+                            continue
+                        z0.append((t0,s0,s2))
+                    for t1, s1 ,s3 in zip(targets1, list(split_audio1),list(split_audio3)):
+                        # print(178,s.shape)
+                        if t1==[[]]*seg_width: #and random.randint(0, 100)!=5:  
+                            continue
+                        z1.append((t1,s1,s3))
+                    random.shuffle(z1)
+                    random.shuffle(z0)                
+                    for j in range(min(len(z1),len(z0))):
+                        t0, s0, s2 = z0[j]
+                        t1, s1 ,s3 = z1[j]
+                        # print(246,t0,t1)
+                        if  mode == 0:
+                            
+                            writer.write({
+                                'x0': (s0.reshape([-1]).tobytes(), 'byte'), 
+                                'x1': (s1.reshape([-1]).tobytes(), 'byte'),
+                                'x2': (s2.reshape([-1]).tobytes(), 'byte'),
+                                'x3': (s3.reshape([-1]).tobytes(), 'byte'),
+                                't0':(str(t0).encode('utf-8'), 'byte'),
+                                't1':(str(t1).encode('utf-8'), 'byte'),
+                            })
+                            cout+=1
+                            print(cout, '/', nums)
+                            if nums:
+                                if cout==nums:
+                                    writer.close()
+                                    mode=1
+                        if mode==1:
+                            vwriter.write({
+                                'x0': (s0.reshape([-1]).tobytes(), 'byte'), 
+                                'x1': (s1.reshape([-1]).tobytes(), 'byte'),
+                                'x2': (s2.reshape([-1]).tobytes(), 'byte'),
+                                'x3': (s3.reshape([-1]).tobytes(), 'byte'),
+                                't0':(str(t0).encode('utf-8'), 'byte'),
+                                't1':(str(t1).encode('utf-8'), 'byte'),
+                            })
+                            vout+=1
+                            print(vout,'/',vnums)
+                            if vnums:
+                                if vout==vnums:
+                                    vwriter.close()
+                                    return cout,vout
+                render_failed=0
+                for r in result:
+                    if not r.get():
+                        render_failed=1
+                        break
+
             except AssertionError as e: 
                 # print(file,'too short <10s') 
                 continue
