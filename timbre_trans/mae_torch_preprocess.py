@@ -78,11 +78,11 @@ instruments = {
     # # 'pan' : ('Roland_SC-88.sf2', 'Pan flute')
     # 'piano':('Chateau Grand Lite-v1.0.sf2',''),
     'electric guitar Dry':('Electric-Guitars-JNv4.4.sf2','Clean Guitar GU'),
-    'electric guitar Distort':('Electric-Guitars-JNv4.4.sf2','Distortion SG'),
+    # 'electric guitar Distort':('Electric-Guitars-JNv4.4.sf2','Distortion SG'),
     # 'electric guitar Jazz':('Electric-Guitars-JNv4.4.sf2','Jazz Guitar FR3'),
     # 'acoustic guitar':('Acoustic Guitars JNv2.4.sf2',''),
     # 'string':('Nice-Strings-PlusOrchestra-v1.6.sf2','String'),
-    # 'orchestra':('Nice-Strings-PlusOrchestra-v1.6.sf2','Orchestra'),
+    'orchestra':('Nice-Strings-PlusOrchestra-v1.6.sf2','Orchestra'),
     # 'cello':('Nice-Strings-PlusOrchestra-v1.6.sf2','Cello 1'),
     # 'violin':('Nice-Strings-PlusOrchestra-v1.6.sf2','Violin 1'),
     # 'brass':('Nice-Strings-PlusOrchestra-v1.6.sf2','Brass'),
