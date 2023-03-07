@@ -1,3 +1,4 @@
+from MelGAN.utils.audio import melspectrogram
 from typing import Any, Callable, Mapping, Optional, Sequence, Tuple, TypeVar, MutableMapping
 import librosa
 import os
@@ -29,9 +30,9 @@ parser.add_argument("--delete_wav", type=int, default=1, help='')
 parser.add_argument("--segwidth", type=int, default=512, help='')
 parser.add_argument("--train_nums", type=int, default=100000, help='')
 parser.add_argument("--valid_nums", type=int, default=5000, help='')
-parser.add_argument("--traindatasets", type=str, default='/common-data/liaolin/dftraindatasets', help='')
-parser.add_argument("--validdatasets", type=str, default='/common-data/liaolin/dfvaliddatasets', help='')
-parser.add_argument("--maestropath", type=str, default='/common-data/liaolin/maestro-v3.0.0/', help='')
+parser.add_argument("--traindatasets", type=str, default='/data/liaolin/dftraindatasets', help='')
+parser.add_argument("--validdatasets", type=str, default='/data/liaolin/dfvaliddatasets', help='')
+parser.add_argument("--maestropath", type=str, default='/data/liaolin/maestro-v3.0.0/', help='')
 parser.add_argument("--method", type=str, default='melspec', help='')
 args = parser.parse_args()
 
@@ -39,8 +40,7 @@ sample_rate = args.samplerate
 hop_width = 200 if args.method=='melspec' else int(sample_rate/32)
 seg_width = args.segwidth
 def select_midi_soundfont(name, instrument='default'):
-    matches = sorted(Path('./data/soundfont/').glob('**/' + name))
-    matches = sorted(Path('./sf2').glob('**/' + name))
+    matches = sorted(Path('/data/liaolin/soundfont/').glob('**/' + name))
     if len(matches) == 0:
         raise Exception('Could not find soundfont: ' + name)
     elif len(matches) > 1:
