@@ -21,7 +21,7 @@ import subprocess
 
 from pathlib import Path
 import argparse
-from audio import melspectrogram
+
 parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.ArgumentDefaultsHelpFormatter)
 # Create a temporary config file pointing to the correct soundfont
 parser.add_argument("--samplerate", type=int, default=16000, help='')
