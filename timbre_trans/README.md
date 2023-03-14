@@ -15,6 +15,9 @@ Expressive Flute SSO-v1.2.sf2
 Chris Mandolin-4U-v3.0.sf2
 
 
+requirment
+audio-diffusion-pytorch<=0.0.80
+
 
 #数据合成
 
